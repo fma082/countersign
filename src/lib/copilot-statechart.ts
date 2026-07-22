@@ -25,11 +25,13 @@ export type CopilotStatus =
 
 /** Fired by the person at the keyboard. */
 export type UserSignal =
-  | { kind: "input"; value: string } // composer content changed
-  | { kind: "submit" } //              send the current composer text
-  | { kind: "cancel" } //              stop an in-flight turn
-  | { kind: "approve" } //             clear the gate, run the effect
-  | { kind: "reject" }; //             clear the gate, discard the effect
+  | { kind: "input"; value: string } //                 composer content changed
+  | { kind: "submit" } //                               send the current composer text
+  | { kind: "cancel" } //                               stop an in-flight turn
+  | { kind: "approve" } //                              clear the gate, run the whole effect
+  | { kind: "approvePartial"; excludedIds: string[] } // clear the gate, run a subset
+  | { kind: "reject" } //                               clear the gate, discard the effect
+  | { kind: "undo" }; //                                reverse the last reversible write
 
 /** Fired by the engine (the server-side StreamFrame reader). */
 export type EngineSignal =
@@ -56,7 +58,9 @@ export const SIGNAL_ORIGIN: Record<CopilotSignal["kind"], SignalOrigin> = {
   submit: "user",
   cancel: "user",
   approve: "user",
+  approvePartial: "user",
   reject: "user",
+  undo: "user",
   firstToken: "engine",
   delta: "engine",
   toolCall: "engine",
@@ -112,6 +116,11 @@ export function transition(state: CopilotState, signal: CopilotSignal): CopilotS
         // has moved into the transcript.
         return { ...state, status: "thinking", draft: "", partial: "", error: null };
       }
+      // Undo is a write. It runs through the engine like any other, but carries
+      // no composer text — the draft is left untouched. Human-only signal.
+      if (signal.kind === "undo") {
+        return { ...state, status: "thinking", partial: "", error: null };
+      }
       if (signal.kind === "reset") return initialState;
       return state;
     }
@@ -126,6 +135,9 @@ export function transition(state: CopilotState, signal: CopilotSignal): CopilotS
       }
       if (signal.kind === "submit" && state.draft.trim().length > 0) {
         return { ...state, status: "thinking", draft: "", partial: "", error: null };
+      }
+      if (signal.kind === "undo") {
+        return { ...state, status: "thinking", partial: "", error: null };
       }
       if (signal.kind === "reset") return initialState;
       return state;
@@ -184,7 +196,9 @@ export function transition(state: CopilotState, signal: CopilotSignal): CopilotS
       // ignored. The engine is already stopped; there is nothing to cancel.
       switch (signal.kind) {
         case "approve":
-          // Re-engage the engine to execute the approved effect and report back.
+        case "approvePartial":
+          // Partial approval is a variant of approve, not a new state: the human
+          // clears the gate and the server executes what survived.
           return { ...state, status: "thinking", partial: "" };
         case "reject":
           return { ...state, status: "complete", draft: "" };

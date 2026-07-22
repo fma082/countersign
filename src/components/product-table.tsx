@@ -9,8 +9,10 @@ export interface TableView {
   margins: Record<string, number>;
   /** Gate targets — "could pass". Side bar + subtle fill. */
   targetIds: string[];
-  /** Previously-effective price per SKU that just changed — "passed". Full fill. */
-  changed: Record<string, number>;
+  /** SKUs that just changed (or were reverted) — "passed". Full fill, transient. */
+  changedIds: string[];
+  /** Prior displayed price per SKU, for a strikethrough on changed rows. */
+  priceWas: Record<string, number>;
 }
 
 const effective = (p: PublicProduct): number => p.salePrice ?? p.price;
@@ -26,6 +28,7 @@ export function ProductTable({
 }) {
   const filter = view.filterSkus ? new Set(view.filterSkus) : null;
   const targets = new Set(view.targetIds);
+  const changed = new Set(view.changedIds);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
@@ -56,8 +59,8 @@ export function ProductTable({
             if (hidden) return null;
 
             const isTarget = targets.has(p.sku);
-            const wasPrice = view.changed[p.sku];
-            const isChanged = wasPrice !== undefined;
+            const isChanged = changed.has(p.sku);
+            const wasPrice = view.priceWas[p.sku];
             const onSale = p.salePrice !== null;
             const margin = view.margins[p.sku];
 
@@ -87,17 +90,14 @@ export function ProductTable({
                   {p.category}
                 </td>
                 <td className="whitespace-nowrap border-b border-line px-2 py-2 text-right tabular-nums text-ink-2">
-                  {isChanged && (
-                    <span className="mr-1.5 text-ink-3 line-through">
-                      ${wasPrice.toFixed(2)}
-                    </span>
+                  {wasPrice !== undefined ? (
+                    <span className="mr-1.5 text-ink-3 line-through">${wasPrice.toFixed(2)}</span>
+                  ) : (
+                    onSale && (
+                      <span className="mr-1.5 text-ink-3 line-through">${p.price.toFixed(2)}</span>
+                    )
                   )}
-                  {!isChanged && onSale && (
-                    <span className="mr-1.5 text-ink-3 line-through">
-                      ${p.price.toFixed(2)}
-                    </span>
-                  )}
-                  <span className={cn(onSale && !isChanged && "text-ink")}>
+                  <span className={cn(onSale && wasPrice === undefined && "text-ink")}>
                     ${effective(p).toFixed(2)}
                   </span>
                 </td>

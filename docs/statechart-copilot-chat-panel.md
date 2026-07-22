@@ -32,7 +32,7 @@ The **origin** is part of the contract — it is what makes "only a human leaves
 the gate" enforceable rather than aspirational (`SIGNAL_ORIGIN` in code).
 
 **User** (the person at the keyboard)
-: `input(value)` · `submit` · `cancel` · `approve` · `reject`
+: `input(value)` · `submit` · `cancel` · `approve` · `approvePartial(excludedIds)` · `reject` · `undo`
 
 **Engine** (the server-side StreamFrame reader)
 : `firstToken` · `delta(text)` · `toolCall` · `invalidToolCall` · `awaitApproval` · `done` · `error(message)`
@@ -50,6 +50,7 @@ idle  ──input(text)──▶ typing
 typing ──input("")──▶ idle
 typing ──submit──▶ thinking            (composer clears; text moves to transcript)
 {empty,idle,complete,error} ──submit──▶ thinking
+{empty,idle,typing,complete,error} ──undo──▶ thinking   (undo is a write; draft untouched)
 
 thinking ──firstToken──▶ streaming
 thinking ──delta──▶ streaming          (a chunk can precede firstToken)
@@ -68,6 +69,7 @@ streaming ──cancel──▶ complete         (partial text preserved)
 streaming ──error──▶ error
 
 awaitingApproval ──approve──▶ thinking (re-engage engine to execute + report)
+awaitingApproval ──approvePartial(excludedIds)──▶ thinking   (a variant of approve)
 awaitingApproval ──reject──▶ complete
 awaitingApproval ──(any engine signal)──▶ awaitingApproval   (ignored)
 
@@ -100,6 +102,16 @@ cheaply detect "nothing happened."
 
 4. **Engine failure is recoverable.**
    `error` is a real state with `submit` wired as retry, not a dead end.
+
+5. **Undo is a human-only write; partial approval is not a new state.**
+   `undo` originates only from the user — the model cannot emit it — and runs
+   through the engine like any other write (`… ──undo──▶ thinking ──…──▶
+   complete`), appending a new `undone` entry rather than editing history.
+   `approvePartial` is a *variant* of `approve`, not a fourth gate exit in the
+   machine: the human still leaves the gate with a single human signal. The undo
+   *window* (which write is undoable, and what closes it) is transcript state
+   owned by the shell, not the statechart — see
+   [pattern-4-approval-checkpoint.md](pattern-4-approval-checkpoint.md).
 
 ---
 

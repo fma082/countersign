@@ -59,6 +59,16 @@ export const belowReorderProducts = (): Product[] =>
 export const negativeMargin = (): Product[] =>
   catalog.filter((p) => marginPct(p) < 0);
 
+export const activeProducts = (): Product[] =>
+  catalog.filter((p) => p.status === "active");
+
+/** Active products hidden from the web store — natural discontinue candidates. */
+export const hiddenActiveProducts = (): Product[] =>
+  catalog.filter((p) => p.status === "active" && !p.webVisible);
+
+export const findProduct = (sku: string): Product | undefined =>
+  catalog.find((p) => p.sku === sku);
+
 /** A margin readout the client may display *only* when a tool reveals it. */
 export interface MarginRow {
   sku: string;
@@ -72,7 +82,47 @@ export const marginRow = (p: Product): MarginRow => ({
   marginPct: Math.round(marginPct(p) * 10) / 10,
 });
 
-// ── Write-side: the one destructive operation this iteration ships ────────
+// ── Reversible field writes (radius 1) ───────────────────────────────────
+// Single row, single field, window still open. The server reads the prior
+// value so the write can be undone, then mutates.
+
+export type WriteField = "price" | "stock" | "webVisible";
+
+export const getField = (sku: string, field: WriteField): number | boolean | undefined => {
+  const p = findProduct(sku);
+  if (!p) return undefined;
+  return field === "price" ? p.price : field === "stock" ? p.stock : p.webVisible;
+};
+
+/** Set one field on one row. Returns false if the SKU does not exist. */
+export const setField = (sku: string, field: WriteField, value: number | boolean): boolean => {
+  const p = findProduct(sku);
+  if (!p) return false;
+  if (field === "price") p.price = value as number;
+  else if (field === "stock") p.stock = value as number;
+  else p.webVisible = value as boolean;
+  p.lastUpdated = REFERENCE_DATE;
+  return true;
+};
+
+/** Set one field across many rows (a radius-N write, only reached via the gate). */
+export const setFieldBatch = (
+  skus: string[],
+  field: WriteField,
+  value: number | boolean,
+): Product[] => {
+  const set = new Set(skus);
+  const changed: Product[] = [];
+  for (const p of catalog) {
+    if (set.has(p.sku)) {
+      setField(p.sku, field, value);
+      changed.push(p);
+    }
+  }
+  return changed;
+};
+
+// ── Destructive writes ────────────────────────────────────────────────────
 
 export interface ClearedSale {
   sku: string;
@@ -92,10 +142,17 @@ export const previewClearExpiredSales = (today = REFERENCE_DATE): ClearedSale[] 
     marginBefore: Math.round(marginPct(p) * 10) / 10,
   }));
 
-/** Execute the sweep. Clears salePrice + saleEnds on expired-sale rows only.
- *  The active control sale (NB-LT-2004) is never matched. Returns what changed. */
-export const applyClearExpiredSales = (today = REFERENCE_DATE): ClearedSale[] => {
-  const cleared = previewClearExpiredSales(today);
+/**
+ * Execute the sweep. Clears salePrice + saleEnds on expired-sale rows only, and
+ * only within `allowed` when a subset was approved. The active control sale
+ * (NB-LT-2004) is never matched. Returns what changed.
+ */
+export const applyClearExpiredSales = (
+  allowed?: string[],
+  today = REFERENCE_DATE,
+): ClearedSale[] => {
+  const allow = allowed ? new Set(allowed) : null;
+  const cleared = previewClearExpiredSales(today).filter((c) => !allow || allow.has(c.sku));
   const skus = new Set(cleared.map((c) => c.sku));
   for (const p of catalog) {
     if (skus.has(p.sku)) {
@@ -105,4 +162,19 @@ export const applyClearExpiredSales = (today = REFERENCE_DATE): ClearedSale[] =>
     }
   }
   return cleared;
+};
+
+/** Discontinue products (and drop them from the web store). Subset-aware. */
+export const applyDiscontinue = (skus: string[]): Product[] => {
+  const set = new Set(skus);
+  const changed: Product[] = [];
+  for (const p of catalog) {
+    if (set.has(p.sku) && p.status === "active") {
+      p.status = "discontinued";
+      p.webVisible = false;
+      p.lastUpdated = REFERENCE_DATE;
+      changed.push(p);
+    }
+  }
+  return changed;
 };

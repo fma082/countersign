@@ -20,7 +20,8 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
   const [reveal, setReveal] = useState<Set<ColumnKey>>(new Set());
   const [margins, setMargins] = useState<Record<string, number>>({});
   const [targetIds, setTargetIds] = useState<string[]>([]);
-  const [changed, setChanged] = useState<Record<string, number>>({});
+  const [changedIds, setChangedIds] = useState<string[]>([]);
+  const [priceWas, setPriceWas] = useState<Record<string, number>>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const changedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -36,26 +37,32 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     if (effect.margins) setMargins((prev) => ({ ...prev, ...effect.margins }));
 
     if (effect.mutations?.length) {
-      // A destructive op just ran. Record each row's prior effective price so
-      // the table can strike it through, then apply the mutation.
+      // A write (reversible, approved, or undone) just landed. Apply each row
+      // patch; where it changes the displayed price, remember the prior value so
+      // the table can strike it through. Every touched row gets the transient
+      // mark — a reverted row is marked the same way a changed one is.
+      const muts = effect.mutations;
       setRows((prev) => {
         const byId = new Map(prev.map((p) => [p.sku, p]));
-        const fresh: Record<string, number> = {};
-        for (const m of effect.mutations!) {
+        const wasFresh: Record<string, number> = {};
+        for (const m of muts) {
           const row = byId.get(m.sku);
-          if (row) fresh[m.sku] = effective(row);
+          if (!row) continue;
+          const before = effective(row);
+          if (effective({ ...row, ...m }) !== before) wasFresh[m.sku] = before;
         }
-        setChanged((c) => ({ ...c, ...fresh }));
+        setPriceWas((c) => ({ ...c, ...wasFresh }));
         return prev.map((p) => {
-          const m = effect.mutations!.find((x) => x.sku === p.sku);
-          return m
-            ? { ...p, price: m.price, salePrice: m.salePrice, saleEnds: m.saleEnds, lastUpdated: m.lastUpdated }
-            : p;
+          const m = muts.find((x) => x.sku === p.sku);
+          return m ? { ...p, ...m } : p;
         });
       });
-      // "Recently changed" is transient — distinct from the gate's "could pass".
+      setChangedIds(muts.map((m) => m.sku));
       if (changedTimer.current) clearTimeout(changedTimer.current);
-      changedTimer.current = setTimeout(() => setChanged({}), CHANGED_MS);
+      changedTimer.current = setTimeout(() => {
+        setChangedIds([]);
+        setPriceWas({});
+      }, CHANGED_MS);
     }
   }, []);
 
@@ -75,7 +82,8 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     revealMargin: reveal.has("margin"),
     margins,
     targetIds,
-    changed,
+    changedIds,
+    priceWas,
   };
 
   const shownCount = filterSkus ? filterSkus.length : rows.length;
