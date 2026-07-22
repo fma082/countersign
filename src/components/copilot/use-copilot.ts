@@ -34,7 +34,10 @@ export type LogItem =
       gate: GatePreview;
       resolved: "pending" | "approved" | "rejected";
       excluded?: number;
-    };
+    }
+  // Guided-flow signposts. Not model output — the shell drops these in.
+  | { id: string; kind: "note"; text: string }
+  | { id: string; kind: "closing"; text: string };
 
 export interface CopilotCallbacks {
   onEffect(effect: ViewEffect): void;
@@ -240,6 +243,41 @@ export function useCopilot(callbacks: CopilotCallbacks) {
     void consume({});
   }, [consume]);
 
+  /** Submit a specific prompt (the guided flow drives steps through this). */
+  const submitPrompt = useCallback(
+    (text: string) => {
+      const t = text.trim();
+      if (!t) return;
+      setLog((prev) => [...prev, { id: nextId(), kind: "user", text: t }]);
+      historyRef.current.push({ role: "user", content: t });
+      dispatch({ kind: "input", value: t }); // seed the draft so `submit` fires
+      dispatch({ kind: "submit" }); // clears it again — batched, no flash
+      void consume({});
+    },
+    [consume],
+  );
+
+  const pushNote = useCallback(
+    (text: string) => setLog((prev) => [...prev, { id: nextId(), kind: "note", text }]),
+    [],
+  );
+  const pushClosing = useCallback(
+    (text: string) => setLog((prev) => [...prev, { id: nextId(), kind: "closing", text }]),
+    [],
+  );
+
+  /** Wipe the session back to a pristine, guided state. */
+  const reset = useCallback(() => {
+    abortRef.current?.abort();
+    setLog([]);
+    setGate(null);
+    setStale(null);
+    historyRef.current = [];
+    activeUndoRef.current = null;
+    pendingUndoItemRef.current = null;
+    dispatch({ kind: "reset" });
+  }, []);
+
   const cancel = useCallback(() => {
     abortRef.current?.abort();
     stopStreaming();
@@ -294,6 +332,10 @@ export function useCopilot(callbacks: CopilotCallbacks) {
     stale,
     setDraft,
     submit,
+    submitPrompt,
+    pushNote,
+    pushClosing,
+    reset,
     cancel,
     approve,
     reject,

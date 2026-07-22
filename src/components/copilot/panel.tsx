@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { isBusy, isGateOpen } from "@/lib/copilot-statechart";
 import type { StaleUndo } from "@/lib/engine/types";
 import type { useCopilot } from "./use-copilot";
+import { RichText } from "./guided";
 import { StatusBadge } from "./status-badge";
 import { ToolCard } from "./tool-card";
 import { GateCard } from "./gate-card";
@@ -14,7 +15,21 @@ type Copilot = ReturnType<typeof useCopilot>;
 
 /** Presentational copilot panel. All state lives in the useCopilot instance the
  *  scenario shell owns (so table effects and the transcript stay in sync). */
-export function CopilotPanel({ copilot }: { copilot: Copilot }) {
+export function CopilotPanel({
+  copilot,
+  guidedSlot,
+  locked,
+  lockedPlaceholder,
+  onReset,
+}: {
+  copilot: Copilot;
+  /** The interactive guided block, rendered at the foot of the log. */
+  guidedSlot?: ReactNode;
+  /** Free input is held shut while the guided flow runs. */
+  locked?: boolean;
+  lockedPlaceholder?: string;
+  onReset?: () => void;
+}) {
   const { status, draft, log, gate, stale, setDraft, submit, cancel, approve, reject, undo, confirmStale, cancelStale } = copilot;
   const logRef = useRef<HTMLDivElement>(null);
   const undoDisabled = isBusy(status) || isGateOpen(status);
@@ -22,7 +37,7 @@ export function CopilotPanel({ copilot }: { copilot: Copilot }) {
   useEffect(() => {
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [log, stale]);
+  }, [log, stale, guidedSlot]);
 
   return (
     <div className="flex min-h-0 flex-col bg-panel">
@@ -72,13 +87,41 @@ export function CopilotPanel({ copilot }: { copilot: Copilot }) {
                   onReject={reject}
                 />
               );
+            case "note":
+              return (
+                <p
+                  key={item.id}
+                  className="border-l-2 border-line-strong pl-3 text-[11.5px] leading-relaxed text-ink-3"
+                >
+                  <RichText text={item.text} />
+                </p>
+              );
+            case "closing":
+              return (
+                <p
+                  key={item.id}
+                  className="rounded-token border border-line bg-field px-3.5 py-3 text-[13px] leading-relaxed text-ink"
+                >
+                  {item.text}
+                </p>
+              );
           }
         })}
 
         {stale && <StaleConfirm stale={stale} onConfirm={confirmStale} onCancel={cancelStale} />}
+        {guidedSlot}
       </div>
 
-      <Composer status={status} draft={draft} onDraft={setDraft} onSubmit={submit} onCancel={cancel} />
+      <Composer
+        status={status}
+        draft={draft}
+        onDraft={setDraft}
+        onSubmit={submit}
+        onCancel={cancel}
+        locked={locked}
+        lockedPlaceholder={lockedPlaceholder}
+        onReset={onReset}
+      />
     </div>
   );
 }

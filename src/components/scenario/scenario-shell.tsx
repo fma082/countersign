@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
 import type { PublicProduct } from "@/lib/scenario/catalog";
 import type { ColumnKey, ViewEffect } from "@/lib/engine/types";
@@ -8,8 +8,12 @@ import { NavRail } from "@/components/nav-rail";
 import { ProductTable, type TableView } from "@/components/product-table";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { CopilotPanel } from "@/components/copilot/panel";
+import { GuidedSteps } from "@/components/copilot/guided";
 import { useCopilot, type CopilotCallbacks } from "@/components/copilot/use-copilot";
+import { GUIDED_CLOSING, GUIDED_STEPS } from "@/lib/scenario/guided-steps";
 import { cn } from "@/lib/cn";
+
+const LOCKED_PLACEHOLDER = "Complete the steps above to unlock free input.";
 
 const effective = (p: PublicProduct): number => p.salePrice ?? p.price;
 const CHANGED_MS = 6000;
@@ -69,13 +73,90 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
   const callbacks = useMemo<CopilotCallbacks>(
     () => ({
       onEffect: applyEffect,
-      onGateOpen: (ids) => setTargetIds(ids),
+      onGateOpen: (ids) => {
+        // Reveal every targeted row while the human decides — clear any filter a
+        // prior read left on, so all "could pass" rows are visible at once.
+        setFilterSkus(null);
+        setTargetIds(ids);
+      },
       onGateClose: () => setTargetIds([]),
     }),
     [applyEffect],
   );
 
   const copilot = useCopilot(callbacks);
+  const copilotRef = useRef(copilot);
+  copilotRef.current = copilot;
+
+  // ── Guided flow ───────────────────────────────────────────────────────────
+  // The order and the prompts are guided; the streaming and tool calls are the
+  // real engine. `guidedStep` is the active step (4 = done, free input unlocked);
+  // `runningStep` is the step currently executing (its block hides while it runs).
+  const [guidedStep, setGuidedStep] = useState(0);
+  const [runningStep, setRunningStep] = useState<number | null>(null);
+  const note3Shown = useRef(false);
+  const prevStatus = useRef(copilot.status);
+  const status = copilot.status;
+
+  useEffect(() => {
+    const prev = prevStatus.current;
+    prevStatus.current = status;
+    if (runningStep === null) return;
+
+    // Act on the EDGE into a terminal state, not the standing value — otherwise a
+    // step would "complete" the instant it starts (status is still complete).
+    const enteredComplete = prev !== "complete" && status === "complete";
+    const enteredGate = prev !== "awaitingApproval" && status === "awaitingApproval";
+    const cp = copilotRef.current;
+
+    if (runningStep < 3) {
+      if (enteredComplete) {
+        cp.pushNote(GUIDED_STEPS[runningStep].note);
+        setGuidedStep(runningStep + 1);
+        setRunningStep(null);
+      }
+      return;
+    }
+
+    // Step 04 — the gate. Its note lands when the engine halts (gate opens); the
+    // closing lands once the human has decided (any of the three exits).
+    if (enteredGate && !note3Shown.current) {
+      note3Shown.current = true;
+      cp.pushNote(GUIDED_STEPS[3].note);
+    }
+    if (enteredComplete) {
+      cp.pushClosing(GUIDED_CLOSING);
+      setGuidedStep(4);
+      setRunningStep(null);
+    }
+  }, [status, runningStep]);
+
+  const onRunStep = useCallback((i: number) => {
+    setRunningStep(i);
+    copilotRef.current.submitPrompt(GUIDED_STEPS[i].prompt);
+  }, []);
+
+  const resetScenario = useCallback(() => {
+    copilotRef.current.reset();
+    setRows(initialRows);
+    setFilterSkus(null);
+    setReveal(new Set());
+    setMargins({});
+    setTargetIds([]);
+    setChangedIds([]);
+    setPriceWas({});
+    if (changedTimer.current) clearTimeout(changedTimer.current);
+    setGuidedStep(0);
+    setRunningStep(null);
+    note3Shown.current = false;
+    prevStatus.current = "empty";
+  }, [initialRows]);
+
+  const guidedActive = guidedStep < 4;
+  const guidedSlot =
+    guidedActive && runningStep === null ? (
+      <GuidedSteps step={guidedStep} onRun={onRunStep} />
+    ) : null;
 
   const view: TableView = {
     filterSkus,
@@ -123,7 +204,13 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
 
       {/* Copilot — fixed column on desktop */}
       <aside className="hidden min-h-0 border-l border-line lg:flex lg:flex-col">
-        <CopilotPanel copilot={copilot} />
+        <CopilotPanel
+          copilot={copilot}
+          guidedSlot={guidedSlot}
+          locked={guidedActive}
+          lockedPlaceholder={LOCKED_PLACEHOLDER}
+          onReset={resetScenario}
+        />
       </aside>
 
       {/* Copilot — drawer below lg */}
@@ -155,7 +242,13 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
             >
               <X size={16} />
             </button>
-            <CopilotPanel copilot={copilot} />
+            <CopilotPanel
+              copilot={copilot}
+              guidedSlot={guidedSlot}
+              locked={guidedActive}
+              lockedPlaceholder={LOCKED_PLACEHOLDER}
+              onReset={resetScenario}
+            />
           </div>
         </div>
       )}
