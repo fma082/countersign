@@ -35,7 +35,7 @@ Reads (run on their own):
 Reversible writes (run immediately, one product, undoable):
 - update_price(sku, price)
 - adjust_stock(sku, stock)
-- toggle_web_visible(sku, visible?)
+- set_web_visible(sku, visible) — visible is REQUIRED (true = show, false = hide). There is no toggle; always state the direction explicitly.
 Always pass a single sku for these.
 
 Destructive writes (you propose, a human approves — you cannot run them):
@@ -227,7 +227,7 @@ const KNOWN_TOOLS = [
   "discontinue_products",
   "update_price",
   "adjust_stock",
-  "toggle_web_visible",
+  "set_web_visible",
   "filter_view",
   "query_products",
 ] as const;

@@ -42,7 +42,7 @@ to downstream systems (delisting, reorder stops) that you don't control.
 
 Two products in this build make the axes concrete:
 
-- **`toggle_web_visible` (radius 1)** is reversible — re-showing a product is a
+- **`set_web_visible` (radius 1)** is reversible — re-showing a product is a
   glance away. **`discontinue_products` (even radius 1)** is destructive —
   status propagates, the window closes. *Same radius, different tier — because
   of the window.*

@@ -162,16 +162,17 @@ export const TOOLS: ProviderTool[] = [
   {
     type: "function",
     function: {
-      name: "toggle_web_visible",
+      name: "set_web_visible",
       description:
-        "Show or hide ONE product from the web store (pass its sku). Reversible. If a `where` selector matches many products it becomes a batch and requires approval.",
+        "Set the web-store visibility of ONE product (pass its sku) to an EXPLICIT value. `visible` is required: true shows it, false hides it. There is no toggle — a call without an explicit direction is rejected, never guessed. Reversible. A `where` selector matching many products becomes a batch and requires approval.",
       parameters: {
         type: "object",
         properties: {
           sku: { type: "string" },
           where: { type: "string", enum: selectorEnum },
-          visible: { type: "boolean" },
+          visible: { type: "boolean", description: "Required. true = show, false = hide." },
         },
+        required: ["visible"],
       },
     },
   },
@@ -221,8 +222,8 @@ export function govern(id: string, name: string, args: Record<string, unknown>):
       return governFieldWrite(id, "update_price", "price", args);
     case "adjust_stock":
       return governFieldWrite(id, "adjust_stock", "stock", args);
-    case "toggle_web_visible":
-      return governFieldWrite(id, "toggle_web_visible", "webVisible", args);
+    case "set_web_visible":
+      return governFieldWrite(id, "set_web_visible", "webVisible", args);
     case "clear_expired_sales":
     case "discontinue_products":
       return governDestructive(id, name, args);
@@ -303,7 +304,7 @@ function governFieldWrite(
   if (rows.length === 0) return invalid(id, tool, args, "No products match.");
 
   // Validate the value BEFORE deciding anything.
-  const parsed = writeValue(tool, args, rows.length === 1 ? rows[0] : undefined);
+  const parsed = writeValue(tool, args);
   if ("error" in parsed) return invalid(id, tool, args, parsed.error);
   const value = parsed.value;
 
@@ -485,7 +486,7 @@ export function executeGate(
 function replanFieldBatch(tool: string, args: Record<string, unknown>): Plan {
   const field: WriteField = tool === "update_price" ? "price" : tool === "adjust_stock" ? "stock" : "webVisible";
   const { rows } = resolveTargets(args);
-  const parsed = writeValue(tool, args, undefined);
+  const parsed = writeValue(tool, args);
   const value = "value" in parsed ? parsed.value : field === "webVisible" ? false : 0;
   return planFieldBatch(tool, field, value, rows);
 }
@@ -522,7 +523,6 @@ export function executeUndo(
 function writeValue(
   tool: string,
   args: Record<string, unknown>,
-  single: Product | undefined,
 ): { value: number | boolean } | { error: string } {
   if (tool === "update_price") {
     const n = Number(args.price);
@@ -534,12 +534,18 @@ function writeValue(
     if (!Number.isInteger(n) || n < 0) return { error: `Invalid stock "${String(args.stock)}".` };
     return { value: n };
   }
-  // toggle_web_visible: single with no explicit value → flip; batch → the value.
+  // set_web_visible: the direction is MANDATORY and EXPLICIT. A boolean (or its
+  // clear string form) is honoured; anything else — omitted, a number, a vague
+  // string — is refused. We never infer and never flip the current state. A
+  // write without a direction does not execute. ("toggle" invited exactly the
+  // ambiguity a small model then exposed; "set" + required arg closes it.)
   if (typeof args.visible === "boolean") return { value: args.visible };
   if (args.visible === "true") return { value: true };
   if (args.visible === "false") return { value: false };
-  if (single) return { value: !single.webVisible };
-  return { value: false }; // batch hide by default
+  return {
+    error:
+      "set_web_visible needs an explicit visible: true or false. It was omitted or unclear — refusing to guess a direction.",
+  };
 }
 
 function writeSummary(field: WriteField, name: string, from: number | boolean, to: number | boolean): string {
