@@ -90,6 +90,17 @@ function resolveSelector(where: string): Resolved | null {
 const marginsFor = (rows: Product[]): Record<string, number> =>
   Object.fromEntries(rows.map((p) => [p.sku, Math.round(marginPct(p) * 10) / 10]));
 
+/** Fresh margins for SKUs after a write, so a revealed Margin column never goes
+ *  stale (a cleared sale flips a negative margin positive). Server-computed. */
+const marginPatch = (skus: string[]): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const sku of skus) {
+    const p = findProduct(sku);
+    if (p) out[sku] = Math.round(marginPct(p) * 10) / 10;
+  }
+  return out;
+};
+
 const money = (n: number) => `$${n.toFixed(2)}`;
 
 // ── Provider tool schemas ──────────────────────────────────────────────────
@@ -329,7 +340,7 @@ function governFieldWrite(
         ...mk(id, tool, "reversible", "ok", writeSummary(field, p.name, from, value), args, [p.sku]),
         undo,
       },
-      effect: { mutations: [fieldMutation(p.sku, field, value)] },
+      effect: { mutations: [fieldMutation(p.sku, field, value)], margins: marginPatch([p.sku]) },
       toolResult: JSON.stringify({ ok: true, sku: p.sku, field, from, to: value }),
     };
   }
@@ -478,7 +489,7 @@ export function executeGate(
       ...mk(callId, tool, "gate", "ok", okSummary + suffix, args, allowed),
       excluded,
     },
-    effect: { mutations, filter: { skus: null } },
+    effect: { mutations, filter: { skus: null }, margins: marginPatch(allowed) },
     toolResult: JSON.stringify({ approved: allowed.length, excluded: excluded.length, skus: allowed }),
   };
 }
@@ -514,7 +525,7 @@ export function executeUndo(
   return {
     kind: "undone",
     event: mk(callId, spec.tool, "safe", "undone", summary, {}, [spec.sku]),
-    effect: { mutations: [fieldMutation(spec.sku, spec.field, spec.from)] },
+    effect: { mutations: [fieldMutation(spec.sku, spec.field, spec.from)], margins: marginPatch([spec.sku]) },
     toolResult: JSON.stringify({ undone: true, sku: spec.sku, field: spec.field, restoredTo: spec.from }),
   };
 }
