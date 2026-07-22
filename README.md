@@ -40,25 +40,31 @@ Override the provider with `OLLAMA_HOST` / `OLLAMA_MODEL` if needed.
 
 ## Routes
 
-| Route       | What it is                                                   |
-| ----------- | ------------------------------------------------------------ |
-| `/`         | Placeholder home (the real home ships in a later iteration). |
-| `/scenario` | The demo — Northbase catalog + the copilot.                  |
-| `/tokens`   | Live showcase of the token system (toggle light/dark).       |
+| Route       | What it is                                                        |
+| ----------- | ---------------------------------------------------------------- |
+| `/`         | Home — the positioning, a static app-shot, and the pattern index. |
+| `/scenario` | The demo — Northbase catalog + the copilot, guided start.         |
+| `/tokens`   | Live showcase of the token system (toggle light/dark).            |
 
 Deep-link a theme with `?theme=light` / `?theme=dark`.
 
 ## Try the scenario
 
-In the copilot panel:
+`/scenario` opens **guided**: four stacked steps walk you through the tiers in
+order, then free input unlocks.
 
-1. *"How many products are on an expired sale?"* → a **read** runs on its own.
-2. *"Filter to the ones below cost and show margin"* → a reversible **view**
-   change; the hidden Margin column is revealed with server-computed values.
-3. *"Clean up the expired sales"* → a **destructive** write parks at the
-   approval gate. The six affected rows are spotlighted in the table; the one
-   active, valid sale (`NB-LT-2004`) is left out. Approve applies it; Reject
-   changes nothing.
+1. *Find products selling below cost* → a **read** runs on its own; the hidden
+   Margin column is revealed with server-computed values.
+2. *Show me what's causing it* → still a **read** — what you see changes, what
+   exists doesn't.
+3. *Raise the price on the SD Card Case* → a **reversible** write runs, then
+   waits; the undo lives on the action's card until the next write.
+4. *Clear all expired sale prices* → a **destructive** write parks at the
+   approval gate. The affected rows are spotlighted; the one active, valid sale
+   (`NB-LT-2004`) is left out. Approve all, approve a subset (uncheck by your own
+   judgment), or reject.
+
+A closing states the thesis, free input unlocks, and Reset restores the seed.
 
 ## Architecture
 

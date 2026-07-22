@@ -4,6 +4,72 @@ A living log of decisions and iterations. Newest first.
 
 ---
 
+## Iteration 3 — presentation: guided flow + home (2026-07-22)
+
+**Goal:** the layer that makes a stranger understand the project with nobody
+beside them. Two fronts: a guided start for `/scenario`, and a new home at `/`.
+The engine is untouched — the guided flow runs the real engine as-is; the home
+is static. References (`_inbox/`) read for interaction and hierarchy, not ported.
+
+### Shipped
+
+- **Guided flow.** `/scenario` opens with a welcome block and the four steps as
+  stacked commands — read → read → reversible → destructive, each tagged with
+  its tier. Steps are sequential (only the active one is clickable); 03 and 04
+  announce "reversible"/"destructive" before the click, so the tension is built
+  ahead of it. Each step runs a real prompt against the model; only the order
+  and the prompts are guided, never the responses.
+- **Contextual notes.** A terse, left-bordered note drops into the log right
+  after each phenomenon is visible (read; still-a-read; reversible/undo-on-card;
+  engine-halted-at-the-gate). Step 04's note lands when the engine halts; the
+  thesis closing lands once the gate is decided — by any of the three exits.
+- **Input gating + release.** Free input is disabled through the flow with an
+  explanatory placeholder; it unlocks only after step 04 completes, alongside a
+  Reset. A Reset button restores the seed and returns to the guided state.
+- **Home.** Hero-first: headline ("Reads run alone. Writes wait for you."),
+  lede, a **static** app-shot of the split view frozen at the gate (real table +
+  gate card, no engine, inert), and the demo CTA. A 3-column claims strip with
+  hairlines (no cards), then the pattern catalog rebuilt as a compact **index**
+  (not a chat gallery) — subordinate to the hero.
+- **Two truth fixes surfaced by the guided run.** The gate now clears any prior
+  read's filter so all "could pass" rows are visible at once; and every write
+  effect carries server-fresh margins, so a cleared sale flips a revealed
+  negative margin positive instead of showing a stale number.
+
+### Decisions worth remembering
+
+- **Separate routes.** The home lives at `/`, the demo at `/scenario`; the hero
+  links across. The home never mounts the engine or calls Ollama — a static
+  app-shot, built from the real components, keeps it theme-aware (light + dark)
+  and quota-free. (A raster screenshot couldn't invert with the theme.)
+- **Gate the free input until the flow completes.** A public demo against a 3B
+  with free input from the first second is a roulette — one odd answer in the
+  opening fifteen seconds ruins the first impression. Releasing it only at the
+  end means the visitor already understands what they're looking at, and an
+  imperfect reply breaks nothing. The guided order is also what guarantees a
+  stranger feels read → reversible → destructive in contrast; click "clear"
+  first and the gate has no foil.
+- **In-memory reset.** Northbase is a single shared mutable catalog, so the
+  second visitor would otherwise inherit the first one's changes. Reset restores
+  the seed (client rows immediately; the server re-seeds on the next fresh
+  conversation). This changes once there's a DB with per-session isolation.
+
+### Validation (all green)
+
+- `tsc --noEmit` clean · `next build` clean (`/` prerendered static — no engine).
+- In-browser, **light + dark**: the home (desktop + mobile, no horizontal
+  overflow); the full guided flow — welcome/steps, the four steps with their
+  notes, the reversible step's undo card, the gate with the control sale left
+  out, **all three exits** (approve all, approve a subset, reject), the thesis
+  closing, the input unlocking, and Reset returning to the guided seed.
+
+### Next up
+
+- Per-session isolation (a DB) would retire the shared in-memory reset and let
+  many visitors run the demo at once.
+
+---
+
 ## Iteration 2 — three-tier governance (2026-07-22)
 
 **Goal:** add the missing tier (reversible writes) and reframe the gate to allow
