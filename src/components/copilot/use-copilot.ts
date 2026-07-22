@@ -284,6 +284,17 @@ export function useCopilot(callbacks: CopilotCallbacks) {
     dispatch({ kind: "cancel" });
   }, [stopStreaming]);
 
+  /** Re-run the last turn after an engine error. */
+  const retry = useCallback(() => {
+    const hist = historyRef.current;
+    // Drop a partial assistant a failed stream left behind, so we retry the user
+    // turn rather than have the model continue its own half-answer.
+    if (hist.length && hist[hist.length - 1].role === "assistant") hist.pop();
+    if (!hist.some((m) => m.role === "user")) return;
+    dispatch({ kind: "retry" });
+    void consume({});
+  }, [consume]);
+
   const approve = useCallback(
     (excludedIds: string[] = []) => {
       if (!gate) return;
@@ -337,6 +348,7 @@ export function useCopilot(callbacks: CopilotCallbacks) {
     pushClosing,
     reset,
     cancel,
+    retry,
     approve,
     reject,
     undo,

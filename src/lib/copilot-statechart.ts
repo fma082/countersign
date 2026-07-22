@@ -31,7 +31,8 @@ export type UserSignal =
   | { kind: "approve" } //                              clear the gate, run the whole effect
   | { kind: "approvePartial"; excludedIds: string[] } // clear the gate, run a subset
   | { kind: "reject" } //                               clear the gate, discard the effect
-  | { kind: "undo" }; //                                reverse the last reversible write
+  | { kind: "undo" } //                                 reverse the last reversible write
+  | { kind: "retry" }; //                               re-run the last turn after an error
 
 /** Fired by the engine (the server-side StreamFrame reader). */
 export type EngineSignal =
@@ -61,6 +62,7 @@ export const SIGNAL_ORIGIN: Record<CopilotSignal["kind"], SignalOrigin> = {
   approvePartial: "user",
   reject: "user",
   undo: "user",
+  retry: "user",
   firstToken: "engine",
   delta: "engine",
   toolCall: "engine",
@@ -119,6 +121,10 @@ export function transition(state: CopilotState, signal: CopilotSignal): CopilotS
       // Undo is a write. It runs through the engine like any other, but carries
       // no composer text — the draft is left untouched. Human-only signal.
       if (signal.kind === "undo") {
+        return { ...state, status: "thinking", partial: "", error: null };
+      }
+      // Retry re-runs the last turn after an error, without needing composer text.
+      if (signal.kind === "retry") {
         return { ...state, status: "thinking", partial: "", error: null };
       }
       if (signal.kind === "reset") return initialState;
