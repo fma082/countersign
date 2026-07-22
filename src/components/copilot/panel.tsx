@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { AlertTriangle } from "lucide-react";
+import { isBusy, isGateOpen } from "@/lib/copilot-statechart";
+import type { StaleUndo } from "@/lib/engine/types";
 import type { useCopilot } from "./use-copilot";
 import { StatusBadge } from "./status-badge";
 import { ToolCard } from "./tool-card";
@@ -12,13 +15,14 @@ type Copilot = ReturnType<typeof useCopilot>;
 /** Presentational copilot panel. All state lives in the useCopilot instance the
  *  scenario shell owns (so table effects and the transcript stay in sync). */
 export function CopilotPanel({ copilot }: { copilot: Copilot }) {
-  const { status, draft, log, setDraft, submit, cancel, approve, reject } = copilot;
+  const { status, draft, log, gate, stale, setDraft, submit, cancel, approve, reject, undo, confirmStale, cancelStale } = copilot;
   const logRef = useRef<HTMLDivElement>(null);
+  const undoDisabled = isBusy(status) || isGateOpen(status);
 
   useEffect(() => {
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [log]);
+  }, [log, stale]);
 
   return (
     <div className="flex min-h-0 flex-col bg-panel">
@@ -33,10 +37,7 @@ export function CopilotPanel({ copilot }: { copilot: Copilot }) {
           switch (item.kind) {
             case "user":
               return (
-                <p
-                  key={item.id}
-                  className="max-w-[88%] self-end rounded-token bg-sub px-3 py-2 text-[12.5px] text-ink"
-                >
+                <p key={item.id} className="max-w-[88%] self-end rounded-token bg-sub px-3 py-2 text-[12.5px] text-ink">
                   {item.text}
                 </p>
               );
@@ -50,28 +51,75 @@ export function CopilotPanel({ copilot }: { copilot: Copilot }) {
                 </p>
               );
             case "tool":
-              return <ToolCard key={item.id} event={item.event} />;
+              return (
+                <ToolCard
+                  key={item.id}
+                  event={item.event}
+                  undoState={item.undoState}
+                  undoNote={item.undoNote}
+                  undoDisabled={undoDisabled}
+                  onUndo={undo}
+                />
+              );
             case "gate":
               return (
                 <GateCard
                   key={item.id}
                   gate={item.gate}
                   resolved={item.resolved}
+                  excluded={item.excluded}
                   onApprove={approve}
                   onReject={reject}
                 />
               );
           }
         })}
+
+        {stale && <StaleConfirm stale={stale} onConfirm={confirmStale} onCancel={cancelStale} />}
       </div>
 
-      <Composer
-        status={status}
-        draft={draft}
-        onDraft={setDraft}
-        onSubmit={submit}
-        onCancel={cancel}
-      />
+      <Composer status={status} draft={draft} onDraft={setDraft} onSubmit={submit} onCancel={cancel} />
+    </div>
+  );
+}
+
+function StaleConfirm({
+  stale,
+  onConfirm,
+  onCancel,
+}: {
+  stale: StaleUndo;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="rounded-[10px] border-2 border-action bg-panel p-3.5">
+      <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-ink-3">
+        <AlertTriangle size={11} /> State changed
+      </span>
+      <p className="mt-1.5 text-[12px] leading-relaxed text-ink-2">
+        <span className="text-ink">{stale.spec.name}</span> has changed since that action
+        — its {stale.field} is now{" "}
+        <span className="font-mono text-ink">{String(stale.actual)}</span>, not{" "}
+        <span className="font-mono">{String(stale.expected)}</span>. Undo anyway and restore{" "}
+        <span className="font-mono text-ink">{String(stale.spec.from)}</span>?
+      </p>
+      <div className="mt-3 flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={onConfirm}
+          className="rounded-[6px] bg-action px-3.5 py-2 text-[12.5px] font-medium text-on-action transition-opacity hover:opacity-90"
+        >
+          Undo anyway
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-[6px] border border-line px-3.5 py-2 text-[12.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
+        >
+          Keep the current value
+        </button>
+      </div>
     </div>
   );
 }
@@ -81,8 +129,9 @@ function EmptyState() {
     <div className="mt-2 rounded-token border border-dashed border-line-strong p-4">
       <p className="text-[13px] font-medium text-ink">Ask the copilot</p>
       <p className="mt-1 text-[12px] leading-relaxed text-ink-2">
-        Try “how many products are on an expired sale?”, “filter to the ones below
-        cost and show margin”, or “clean up the expired sales”.
+        Reads run on their own. A single-product change runs and can be undone.
+        “Discontinue the hidden products” stops at the gate — approve all, a
+        subset, or reject.
       </p>
     </div>
   );
