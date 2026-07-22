@@ -41,7 +41,7 @@ export function CopilotPanel({
   }, [log, stale, guidedSlot, status]);
 
   return (
-    <div className="flex min-h-0 flex-col bg-panel">
+    <div className="flex h-full min-h-0 flex-1 flex-col bg-panel">
       <header className="flex items-center justify-between border-b border-line px-4 py-3.5">
         <span className="text-[14px] font-medium text-ink">Copilot</span>
         <StatusBadge status={status} />
