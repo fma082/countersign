@@ -20,13 +20,16 @@ name, never a client-side reinterpretation.
 - **Tailwind v4**, tokens via `@theme` in `globals.css`
 - **shadcn/ui** conventions (radix base, lucide icons)
 - **Inter** (400 / 500)
-- **Ollama** (`llama3.2:3b`) consumed with `fetch` + `ReadableStream`. No SDK.
+- **Model provider** consumed with `fetch` + `ReadableStream`, no SDK, behind a
+  provider-agnostic adapter seam: **Ollama** (`llama3.2:3b`) local, **Groq**
+  (`llama-3.1-8b-instant`) for the public deploy. Same family, same frame
+  contract; `MODEL_PROVIDER` picks one.
 
 Beyond the above: zero extra dependencies.
 
 ## Run it
 
-You need [Ollama](https://ollama.com) running locally with the model pulled:
+Local dev runs against [Ollama](https://ollama.com) with the model pulled:
 
 ```bash
 ollama pull llama3.2:3b     # capabilities must include "tools"
@@ -37,6 +40,25 @@ npm run dev                 # http://localhost:3000
 ```
 
 Override the provider with `OLLAMA_HOST` / `OLLAMA_MODEL` if needed.
+
+### Cloud provider (Groq)
+
+The public deploy swaps Ollama for Groq's OpenAI-compatible API by env var — the
+governance layer, statechart, and UI don't change. Set `MODEL_PROVIDER=groq` and:
+
+| Env var                      | Purpose                                             |
+| ---------------------------- | --------------------------------------------------- |
+| `GROQ_API_KEY`               | Server-side only; never reaches the bundle.         |
+| `MODEL_PROVIDER=groq`        | Selects the Groq adapter (default `ollama`).        |
+| `NEXT_PUBLIC_MODEL_PROVIDER` | Cosmetic footer label only; carries no secret.      |
+| `GROQ_THROTTLE_MS`           | Inter-token delay (default 28). Groq is too fast to see streaming — this restores a legible cadence. |
+| `RATE_LIMIT_MAX`             | Per-IP requests per window (default 20; `<=0` off). |
+| `RATE_LIMIT_WINDOW_MS`       | Rate-limit window (default 60000).                  |
+
+On Vercel these are project env vars. `/` prerenders static and never mounts the
+engine; only `/scenario` consumes the provider. See [`DEV_STATE.md`](DEV_STATE.md)
+for the throttle rationale, the per-instance rate-limit limitation, and the
+dignified-fallback design.
 
 ## Routes
 
@@ -74,9 +96,12 @@ Three layers, one invariant.
 provider  ──RawFrame──▶  governance (server)  ──StreamFrame──▶  client
 ```
 
-- **Adapter frame** ([`src/lib/engine/ollama.ts`](src/lib/engine/ollama.ts)) —
-  the only module that talks to Ollama. Emits raw frames, ignorant of
-  governance. Swapping providers means rewriting this file only.
+- **Adapter frame** ([`src/lib/engine/ollama.ts`](src/lib/engine/ollama.ts) ·
+  [`groq.ts`](src/lib/engine/groq.ts)) — the only modules that talk to a
+  provider. Each emits raw frames, ignorant of governance;
+  [`provider.ts`](src/lib/engine/provider.ts) picks one by `MODEL_PROVIDER`.
+  Adding a provider is a sibling adapter plus one line in the selector — nothing
+  above it changes.
 - **Governance** ([`src/app/api/copilot/route.ts`](src/app/api/copilot/route.ts)
   + [`tools.ts`](src/lib/engine/tools.ts)) — computes previews, labels with real
   counts, and effects. Decides safe / gate / invalid. Executes nothing

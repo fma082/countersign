@@ -14,7 +14,7 @@
  * will execute; the client can shrink a gate's effect but never define it.
  */
 
-import { streamChat } from "@/lib/engine/ollama";
+import { streamChat } from "@/lib/engine/provider";
 import { govern, executeGate, executeUndo, TOOLS } from "@/lib/engine/tools";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
 import { resetCatalog } from "@/lib/scenario/catalog";

@@ -35,10 +35,10 @@ import {
   type WriteField,
 } from "@/lib/scenario/catalog";
 import { effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
-import type { ProviderTool } from "./ollama";
 import type {
   GateItem,
   GatePreview,
+  ProviderTool,
   RowMutation,
   ToolEvent,
   UndoSpec,

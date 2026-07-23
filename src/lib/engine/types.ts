@@ -19,12 +19,35 @@ export interface ChatMessage {
   tool_calls?: ToolCall[];
 }
 
+/**
+ * A tool definition in the provider's expected shape (JSON-schema function).
+ * OpenAI-compatible, which is also what Ollama's /api/chat accepts — so both
+ * adapters send `TOOLS` upstream verbatim. Lives here, in the shared contract,
+ * because it is not owned by any single adapter.
+ */
+export interface ProviderTool {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+/**
+ * Why a stream failed, so the client can pick a dignified surface instead of a
+ * stack trace. `rate_limit` is OUR per-IP throttle ("try again in a bit");
+ * `provider_down` is the upstream model being unreachable or out of quota ("the
+ * live model isn't available"); `generic` is everything else (retryable).
+ */
+export type ErrorReason = "rate_limit" | "provider_down" | "generic";
+
 // ── Layer 1 output: raw frames from the adapter ────────────────────────────
 export type RawFrame =
   | { type: "token"; text: string }
   | { type: "toolCall"; id: string; name: string; args: Record<string, unknown> }
   | { type: "done" }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; reason?: ErrorReason };
 
 // ── Governance vocabulary ──────────────────────────────────────────────────
 

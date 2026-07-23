@@ -9,21 +9,11 @@
  * Transport: fetch + ReadableStream against Ollama's NDJSON /api/chat.
  */
 
-import type { ChatMessage, RawFrame, ToolCall } from "./types";
+import type { ChatMessage, ProviderTool, RawFrame, ToolCall } from "./types";
 
 const OLLAMA_HOST = process.env.OLLAMA_HOST ?? "http://localhost:11434";
 export const MODEL = process.env.OLLAMA_MODEL ?? "llama3.2:3b";
 export const PROVIDER_LABEL = "Ollama";
-
-/** A tool definition in the provider's expected shape (JSON-schema function). */
-export interface ProviderTool {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-}
 
 interface OllamaChunk {
   message?: {
