@@ -160,4 +160,4 @@ export type StreamFrame =
   | { type: "gate"; gate: GatePreview }
   | { type: "staleUndo"; stale: StaleUndo }
   | { type: "done" }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; reason?: ErrorReason };

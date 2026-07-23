@@ -17,6 +17,7 @@
 import { streamChat } from "@/lib/engine/provider";
 import { govern, executeGate, executeUndo, TOOLS } from "@/lib/engine/tools";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
+import { rateLimit, clientIp } from "@/lib/engine/rate-limit";
 import { resetCatalog } from "@/lib/scenario/catalog";
 import type { ChatMessage, StreamFrame, UndoSpec, ViewEffect } from "@/lib/engine/types";
 
@@ -71,6 +72,25 @@ export async function POST(req: Request) {
     content: m.content,
   }));
 
+  // Rate limit only the model-consuming path — a fresh turn. Approve/undo are
+  // pure governance (no provider call), so a visitor mid-decision is never
+  // blocked from finishing what they started.
+  const isModelTurn = body.action !== "approve" && body.action !== "undo";
+  if (isModelTurn) {
+    const { ok, retryAfter } = rateLimit(clientIp(req));
+    if (!ok) {
+      return oneFrame(
+        {
+          type: "error",
+          reason: "rate_limit",
+          message: `You've reached the demo's request limit. Try again in about ${retryAfter}s.`,
+        },
+        429,
+        { "Retry-After": String(retryAfter) },
+      );
+    }
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const enc = new TextEncoder();
@@ -98,6 +118,20 @@ export async function POST(req: Request) {
       "Content-Type": "application/x-ndjson; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+    },
+  });
+}
+
+/** A one-off NDJSON body carrying a single frame — used for pre-stream refusals
+ *  (e.g. rate limit) so the client's uniform reader still gets a typed frame,
+ *  not a bare status. */
+function oneFrame(frame: StreamFrame, status: number, extra?: Record<string, string>): Response {
+  return new Response(JSON.stringify(frame) + "\n", {
+    status,
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      ...extra,
     },
   });
 }
