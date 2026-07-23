@@ -38,7 +38,10 @@ export type LogItem =
     }
   // Guided-flow signposts. Not model output — the shell drops these in.
   | { id: string; kind: "note"; text: string }
-  | { id: string; kind: "closing"; text: string };
+  | { id: string; kind: "closing"; text: string }
+  // Server-authored honest note: the model is paused; the real tool effect
+  // around this item is the system's, not a narration.
+  | { id: string; kind: "paused"; text: string };
 
 export interface CopilotCallbacks {
   onEffect(effect: ViewEffect): void;
@@ -183,6 +186,14 @@ export function useCopilot(callbacks: CopilotCallbacks) {
             setStale(frame.stale);
             break;
           }
+          case "paused": {
+            // The model is paused; the real tool effect lands around this note.
+            // Stop any streaming cursor and drop the honest signpost in the log.
+            assistantId = null;
+            stopStreaming();
+            setLog((prev) => [...prev, { id: nextId(), kind: "paused", text: frame.text }]);
+            break;
+          }
           case "done": {
             stopStreaming();
             dispatch({ kind: "done" });
@@ -261,16 +272,20 @@ export function useCopilot(callbacks: CopilotCallbacks) {
     void consume({});
   }, [consume]);
 
-  /** Submit a specific prompt (the guided flow drives steps through this). */
+  /**
+   * Submit a specific prompt (the guided flow drives steps through this). The
+   * optional `fallback` is the step's known tool: if the model can't be reached,
+   * the server runs it directly so the guided flow always completes.
+   */
   const submitPrompt = useCallback(
-    (text: string) => {
+    (text: string, fallback?: { tool: string; args: Record<string, unknown> }) => {
       const t = text.trim();
       if (!t) return;
       setLog((prev) => [...prev, { id: nextId(), kind: "user", text: t }]);
       historyRef.current.push({ role: "user", content: t });
       dispatch({ kind: "input", value: t }); // seed the draft so `submit` fires
       dispatch({ kind: "submit" }); // clears it again — batched, no flash
-      void consume({});
+      void consume(fallback ? { fallbackTool: fallback.tool, fallbackArgs: fallback.args } : {});
     },
     [consume],
   );

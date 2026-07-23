@@ -57,7 +57,25 @@ interface Body {
   excludedIds?: string[];
   undo?: UndoSpec;
   force?: boolean;
+  /** Guided steps only: the tool this step is known to run. If the model can't
+   *  be reached, the server runs it directly rather than break the flow. */
+  fallbackTool?: string;
+  fallbackArgs?: Record<string, unknown>;
 }
+
+/** A guided step's predetermined tool, for the degradation path. */
+interface Fallback {
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+// Server-authored, honest notes that stand in for the missing model narration
+// when the model is paused. NEVER fabricated "answers" — they name the pause and
+// point at the real, server-side effect.
+const PAUSED_FALLBACK =
+  "Model paused — running this step's operation directly. What follows is the system's real result, executed server-side, not a narration.";
+const PAUSED_AFTER_TOOL =
+  "Model paused — the operation ran and its result stands. Only the model's spoken summary is on hold.";
 
 export async function POST(req: Request) {
   let body: Body;
@@ -97,12 +115,16 @@ export async function POST(req: Request) {
       const emit = (frame: StreamFrame) =>
         controller.enqueue(enc.encode(JSON.stringify(frame) + "\n"));
 
+      const fallback: Fallback | undefined = body.fallbackTool
+        ? { tool: body.fallbackTool, args: body.fallbackArgs ?? {} }
+        : undefined;
+
       const run =
         body.action === "approve"
           ? () => runGateDecision(body, emit)
           : body.action === "undo"
             ? () => runUndo(body, emit)
-            : () => runTurn(history, emit);
+            : () => runTurn(history, emit, fallback);
 
       run()
         .catch((err: unknown) => {
@@ -140,14 +162,22 @@ type Emit = (frame: StreamFrame) => void;
 
 /**
  * A normal turn: stream (with transient-failure retries), govern tools, run
- * reads/reversibles, stop at a gate. A failure only surfaces once the resilient
- * wrapper has spent its retries; it carries a typed `reason` so the client can
- * reframe it (a pause) or report it (a real fault).
+ * reads/reversibles, stop at a gate.
+ *
+ * When the model is paused after its retries are spent, the turn still lands
+ * honestly — never a stack trace, never faked narration:
+ *   - if a tool already ran this turn, the effect stands and only the model's
+ *     summary is missing → emit a paused note + `done`;
+ *   - else if this is a guided step (a `fallback` tool is known), run that tool
+ *     directly, server-side, with a paused note → the flow always completes;
+ *   - else (free input, nothing to fall back to) → surface the typed error, for
+ *     the client to reframe (a pause) or report (a real fault).
  */
-async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
+async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback): Promise<void> {
   if (history.length <= 1) resetCatalog();
 
   const messages: ChatMessage[] = [{ role: "system", content: SYSTEM_PROMPT }, ...history];
+  let anyToolRan = false;
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let text = "";
@@ -169,7 +199,14 @@ async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
     }
 
     if (streamError) {
-      emit({ type: "error", message: streamError.message, reason: streamError.reason });
+      if (anyToolRan) {
+        emit({ type: "paused", text: PAUSED_AFTER_TOOL });
+        emit({ type: "done" });
+      } else if (fallback) {
+        runFallback(fallback, emit);
+      } else {
+        emit({ type: "error", message: streamError.message, reason: streamError.reason });
+      }
       return;
     }
 
@@ -202,6 +239,7 @@ async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
       }
 
       emit({ type: "tool", event: decision.event });
+      anyToolRan = true;
       if (decision.kind !== "invalid" && hasEffect(decision.effect)) {
         emit({ type: "effect", effect: decision.effect });
       }
@@ -211,6 +249,31 @@ async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
     }
   }
 
+  emit({ type: "done" });
+}
+
+/**
+ * The guided degradation path — the model is paused, so run this step's known
+ * tool ourselves. This is NOT a simulation: it goes through the same `govern`
+ * every model-driven call does, so the effect, the gate, its preview and
+ * targetIds are the real, server-resolved article. The only thing missing is the
+ * model's spoken narration, and the paused note says so.
+ */
+function runFallback(fallback: Fallback, emit: Emit): void {
+  const decision = govern("call_fallback", fallback.tool, fallback.args);
+  emit({ type: "paused", text: PAUSED_FALLBACK });
+
+  if (decision.kind === "gate") {
+    putGate({ id: decision.gate.id, tool: fallback.tool, args: fallback.args });
+    emit({ type: "tool", event: decision.event });
+    emit({ type: "gate", gate: decision.gate });
+    return;
+  }
+
+  emit({ type: "tool", event: decision.event });
+  if (decision.kind !== "invalid" && hasEffect(decision.effect)) {
+    emit({ type: "effect", effect: decision.effect });
+  }
   emit({ type: "done" });
 }
 

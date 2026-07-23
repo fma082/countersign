@@ -174,5 +174,12 @@ export type StreamFrame =
   | { type: "effect"; effect: ViewEffect }
   | { type: "gate"; gate: GatePreview }
   | { type: "staleUndo"; stale: StaleUndo }
+  /**
+   * The model is paused, but the turn still produced (or is about to produce) a
+   * real, server-side tool effect. Carries an honest, server-authored note that
+   * takes the place of the missing narration — never fabricated model text. The
+   * effect/tool/gate frames around it are the genuine article.
+   */
+  | { type: "paused"; text: string }
   | { type: "done" }
   | { type: "error"; message: string; reason?: ErrorReason };

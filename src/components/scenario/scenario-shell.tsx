@@ -133,7 +133,9 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
 
   const onRunStep = useCallback((i: number) => {
     setRunningStep(i);
-    copilotRef.current.submitPrompt(GUIDED_STEPS[i].prompt);
+    // Pass the step's known tool as a fallback: if the model is paused, the
+    // server runs it directly so the guided flow always reaches the gate.
+    copilotRef.current.submitPrompt(GUIDED_STEPS[i].prompt, GUIDED_STEPS[i].fallback);
   }, []);
 
   const resetScenario = useCallback(() => {
