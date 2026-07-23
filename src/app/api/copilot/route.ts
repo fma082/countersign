@@ -158,7 +158,7 @@ async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
       } else if (frame.type === "toolCall") {
         pending.push({ id: frame.id, name: frame.name, args: frame.args });
       } else if (frame.type === "error") {
-        emit({ type: "error", message: frame.message });
+        emit({ type: "error", message: frame.message, reason: frame.reason });
         errored = true;
       }
     }

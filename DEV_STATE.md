@@ -4,6 +4,97 @@ A living log of decisions and iterations. Newest first.
 
 ---
 
+## Iteration 4 — public deploy: Groq adapter + endpoint guards (2026-07-23)
+
+**Goal:** a stable public link for portfolio/interviews. Swap the local Ollama
+provider for a cloud one (Groq) behind the existing provider-agnostic seam,
+without touching governance, the statechart, or the UI's substance. No database
+yet — session state stays in memory, Reset returns to the seed. The deploy is
+`/scenario` only; `/` stays static and never mounts the engine.
+
+### Shipped
+
+- **Groq adapter (sibling of Ollama).** `src/lib/engine/groq.ts` talks to Groq's
+  OpenAI-compatible `/chat/completions` (SSE, `stream: true`), model
+  `llama-3.1-8b-instant`. It translates OpenAI-style streamed `tool_calls`
+  (fragmented `arguments` accumulated by `index`) into the internal `toolCall`
+  RawFrame — same contract Ollama emits. `ollama.ts` is untouched in behaviour;
+  both are selected by `provider.ts` on `MODEL_PROVIDER=ollama|groq`. Governance
+  imports the provider from the selector and never names a concrete backend.
+- **Artificial inter-token throttle (Groq only).** `GROQ_THROTTLE_MS` (default
+  28ms) delays each content delta. See the decision below.
+- **Per-IP rate limit.** `rate-limit.ts` — fixed-window, in-memory, keyed on
+  `x-forwarded-for`. `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS`; only the
+  model-consuming turn is limited (approve/undo are pure governance and never
+  blocked mid-decision). On the limit, the route returns HTTP 429 whose NDJSON
+  body carries a typed `{reason:"rate_limit"}` error frame.
+- **Dignified fallback.** Error frames now carry an optional `reason`
+  (`rate_limit | provider_down | generic`). The client shows a distinct,
+  explained surface — never a stack trace: "Demo request limit reached" (rate)
+  vs "The live model isn't available right now" (provider down), each with a
+  line on what Countersign is so the page still communicates with the model
+  offline. `generic` keeps the existing retry card.
+
+### Decisions worth remembering
+
+- **The throttle is an anti-feature, on purpose.** Groq returned a full turn in
+  ~22ms in testing — at that speed the streaming cursor, the thinking dots, and
+  the token-by-token reveal are all invisible; text lands in one block and the
+  patterns this project is *about* (watching a read resolve, watching a write
+  land) stop being legible. Warm local Ollama gave perceptible latency for free;
+  the throttle re-creates it deliberately. This is the counter-narrative to the
+  usual Groq demo that sells raw speed: for a trust UI, legible cadence beats
+  instant. Configurable, invisible to the visitor, Groq-only.
+- **Error `reason` on the frame, not string-matched.** Rather than have the
+  client sniff error text, the failure kind is a first-class field the adapter
+  and the route set. Honest by construction — the same principle as `invalid`
+  being a real `ToolDecision`: the UI reflects a typed server verdict, it does
+  not guess.
+- **Rate limit only the model turn.** Approve/undo don't call the provider, so
+  limiting them would block a visitor from finishing a decision they already
+  started — worse UX for no quota saving.
+- **`ProviderTool` moved to `types.ts`.** It described the provider wire shape
+  but lived in `ollama.ts`; a true sibling adapter shouldn't import a type from
+  the other adapter. It now lives in the shared contract.
+
+### Known limits / next up
+
+- **In-memory rate limit is per serverless instance.** On Vercel, the counter
+  is not shared across concurrent instances and resets on cold start, so the
+  effective cap is per-instance, not global. Deliberate — a shared store (Redis)
+  is over-engineering for a portfolio demo. Documented, not fixed.
+- **Pre-recorded walkthrough deferred.** The dignified error state is solid (the
+  priority — it's what an interviewer sees if the link fails). Playing the flow
+  back with simulated responses when the model is down is desirable but
+  secondary; deferred to a later iteration.
+- **No DB yet.** Session state is in memory; Reset returns to the seed. Per-
+  session isolation waits for the database iteration.
+
+### Validation (against Groq)
+
+- `tsc --noEmit` clean · `next build` clean (5 routes); `/` still `○ Static`,
+  only `/scenario` + `/api/copilot` dynamic.
+- Full flow driven via `curl` against `MODEL_PROVIDER=groq`:
+  - `query_products(expired_sales)` → read runs alone, real count 6, targets
+    resolved; answer streams as discrete throttled deltas.
+  - `clear_expired_sales` → parks at the gate first; 6 targets, the one active
+    sale excluded, `warn` flags and server-authored preview intact.
+  - **Approve** → server-authored closing ("Done — applied to 6 products"),
+    mutations + fresh margins in the effect.
+  - `update_price` → reversible, with an `undo` spec.
+- Rate limiter unit-verified: `MAX=3` allows 3, blocks the 4th/5th
+  (`retryAfter=60`), independent per IP.
+
+### Deploy (Vercel)
+
+- Project `/scenario` is the only engine consumer; `/` prerenders static.
+- Env vars to set in Vercel (server-side; the key never reaches the bundle):
+  `GROQ_API_KEY`, `MODEL_PROVIDER=groq`, `NEXT_PUBLIC_MODEL_PROVIDER=groq`
+  (label only), `GROQ_THROTTLE_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`.
+  `NEXT_PUBLIC_MODEL_PROVIDER` is the only public one and carries no secret.
+
+---
+
 ## Iteration 3 — presentation: guided flow + home (2026-07-22)
 
 **Goal:** the layer that makes a stranger understand the project with nobody

@@ -7,6 +7,7 @@ import {
   type CopilotState,
 } from "@/lib/copilot-statechart";
 import type {
+  ErrorReason,
   GatePreview,
   StaleUndo,
   StreamFrame,
@@ -58,6 +59,8 @@ export function useCopilot(callbacks: CopilotCallbacks) {
   const [log, setLog] = useState<LogItem[]>([]);
   const [gate, setGate] = useState<GatePreview | null>(null);
   const [stale, setStale] = useState<StaleUndo | null>(null);
+  // Why the last turn failed — picks the fallback surface. Only read in `error`.
+  const [errorReason, setErrorReason] = useState<ErrorReason>("generic");
 
   const historyRef = useRef<Wire[]>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -187,6 +190,7 @@ export function useCopilot(callbacks: CopilotCallbacks) {
           }
           case "error": {
             stopStreaming();
+            setErrorReason(frame.reason ?? "generic");
             dispatch({ kind: "error", message: frame.message });
             break;
           }
@@ -200,10 +204,15 @@ export function useCopilot(callbacks: CopilotCallbacks) {
           body: JSON.stringify({ messages: historyRef.current, ...bodyExtra }),
           signal: controller.signal,
         });
-        if (!res.ok || !res.body) {
+        // A non-ok status can still carry a typed error frame in its NDJSON body
+        // (e.g. a 429 rate limit). Read the body regardless; only a truly empty
+        // response falls back to a bare status.
+        if (!res.body) {
+          setErrorReason("generic");
           dispatch({ kind: "error", message: `Engine returned ${res.status}.` });
           return;
         }
+        let sawFrame = false;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -215,12 +224,21 @@ export function useCopilot(callbacks: CopilotCallbacks) {
           while ((nl = buffer.indexOf("\n")) !== -1) {
             const line = buffer.slice(0, nl).trim();
             buffer = buffer.slice(nl + 1);
-            if (line) handle(JSON.parse(line) as StreamFrame);
+            if (line) {
+              sawFrame = true;
+              handle(JSON.parse(line) as StreamFrame);
+            }
           }
+        }
+        // A non-ok response that produced no frame at all (proxy 5xx, empty body).
+        if (!res.ok && !sawFrame) {
+          setErrorReason("generic");
+          dispatch({ kind: "error", message: `Engine returned ${res.status}.` });
         }
       } catch {
         if (!controller.signal.aborted) {
           stopStreaming();
+          setErrorReason("generic");
           dispatch({ kind: "error", message: "The stream was interrupted." });
         }
       } finally {
@@ -341,6 +359,7 @@ export function useCopilot(callbacks: CopilotCallbacks) {
     log,
     gate,
     stale,
+    errorReason,
     setDraft,
     submit,
     submitPrompt,

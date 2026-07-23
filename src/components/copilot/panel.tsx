@@ -10,7 +10,7 @@ import { StatusBadge } from "./status-badge";
 import { ToolCard } from "./tool-card";
 import { GateCard } from "./gate-card";
 import { Composer } from "./composer";
-import { ResponseError, ThinkingDots } from "./response-loading";
+import { ResponseError, ResponseFallback, ThinkingDots } from "./response-loading";
 
 type Copilot = ReturnType<typeof useCopilot>;
 
@@ -31,7 +31,7 @@ export function CopilotPanel({
   lockedPlaceholder?: string;
   onReset?: () => void;
 }) {
-  const { state, status, draft, log, gate, stale, setDraft, submit, cancel, retry, approve, reject, undo, confirmStale, cancelStale } = copilot;
+  const { state, status, draft, log, gate, stale, errorReason, setDraft, submit, cancel, retry, approve, reject, undo, confirmStale, cancelStale } = copilot;
   const logRef = useRef<HTMLDivElement>(null);
   const undoDisabled = isBusy(status) || isGateOpen(status);
 
@@ -112,7 +112,12 @@ export function CopilotPanel({
         {/* Transitory response-loading state, in the answer's own slot. Tied to
             the statechart — the dots vanish the instant the first token lands. */}
         {status === "thinking" && <ThinkingDots />}
-        {status === "error" && <ResponseError message={state.error} onRetry={retry} />}
+        {status === "error" &&
+          (errorReason === "generic" ? (
+            <ResponseError message={state.error} onRetry={retry} />
+          ) : (
+            <ResponseFallback reason={errorReason} message={state.error} onRetry={retry} />
+          ))}
 
         {stale && <StaleConfirm stale={stale} onConfirm={confirmStale} onCancel={cancelStale} />}
         {guidedSlot}
