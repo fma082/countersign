@@ -177,7 +177,7 @@ async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
     messages.push({
       role: "assistant",
       content: text,
-      tool_calls: pending.map((p) => ({ function: { name: p.name, arguments: p.args } })),
+      tool_calls: pending.map((p) => ({ id: p.id, function: { name: p.name, arguments: p.args } })),
     });
 
     for (const call of pending) {
@@ -196,7 +196,9 @@ async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
       if (decision.kind !== "invalid" && hasEffect(decision.effect)) {
         emit({ type: "effect", effect: decision.effect });
       }
-      messages.push({ role: "tool", content: decision.toolResult });
+      // Tie each result back to the call that produced it — its own id, never
+      // mixed. Groq (OpenAI-style) rejects a role:"tool" message without it.
+      messages.push({ role: "tool", content: decision.toolResult, tool_call_id: call.id });
     }
   }
 

@@ -112,6 +112,35 @@ yet — session state stays in memory, Reset returns to the seed. The deploy is
   updated for the renamed dir. `next build` verified locally: output at `.next`
   with a `BUILD_ID`.
 
+### Groq `tool_call_id` — provider-agnostic isn't free (2026-07-23)
+
+- **Symptom (found in production).** The first tool call ran, but the follow-up
+  round 400'd: `'messages.3.tool_call_id': property 'tool_call_id' is missing`.
+  The dignified fallback caught it as MODEL OFFLINE and the app never broke —
+  which is exactly what that state is for — but the cause had to be fixed.
+- **Cause.** Groq (OpenAI contract) *requires* every `role:"tool"` message to
+  carry a `tool_call_id` binding the result to the call that produced it. Ollama
+  requires no such thing, so the internal frame never carried an id and the Groq
+  adapter never set one. On the digest round (tool result re-sent upstream),
+  Groq rejected the untethered tool message.
+- **Fix.** The internal `ChatMessage`/`ToolCall` now carry the optional call id
+  (`ToolCall.id`, `ChatMessage.tool_call_id`); the route stamps each assistant
+  `tool_call` and its matching result with the same id (Groq's own, captured off
+  the stream — multiple calls each keep their own, never mixed). The Groq adapter
+  translates both into OpenAI shape. Ollama is untouched: it neither sets nor
+  reads the fields, and ignores them on the wire.
+- **The lesson (case-study material).** Provider-agnostic is not free. Two
+  backends in the same Llama family still disagree on the message contract —
+  Groq demands `tool_call_id`, Ollama doesn't — and the seam that absorbs that is
+  the adapter, by design: *the translation between the internal frame and each
+  provider's format is each adapter's responsibility.* The bug surfaced only
+  against the real cloud backend, in production, and was absorbed by the fallback
+  without a crash before being fixed at the source.
+- **Validated.** Same query that 400'd now completes clean against Groq; approve
+  (server-authored closing + mutations/margins) and a reversible write (incl. a
+  chained second tool round) pass with no 400. Ollama re-verified unchanged. tsc
+  + build clean.
+
 ---
 
 ## Iteration 3 — presentation: guided flow + home (2026-07-22)

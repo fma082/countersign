@@ -10,6 +10,9 @@
 
 // ── Provider-agnostic chat message (what we send upstream) ─────────────────
 export interface ToolCall {
+  /** Provider-assigned call id. OpenAI-style backends (Groq) require it so a
+   *  tool result can be tied back to its call; Ollama omits it and ignores it. */
+  id?: string;
   function: { name: string; arguments: Record<string, unknown> };
 }
 
@@ -17,6 +20,10 @@ export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   tool_calls?: ToolCall[];
+  /** On a `role:"tool"` message — the id of the call this result answers. Groq
+   *  rejects a tool message without it (400); Ollama neither needs nor reads it.
+   *  Each adapter honours its own backend's contract. */
+  tool_call_id?: string;
 }
 
 /**

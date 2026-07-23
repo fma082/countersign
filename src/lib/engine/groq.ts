@@ -218,10 +218,19 @@ function authHeaders(): Record<string, string> {
 }
 
 /**
- * Our `ChatMessage` already matches the OpenAI shape for role/content. The one
- * seam is `tool_calls`: internally they carry a parsed args object; OpenAI wants
- * a stringified `arguments` and an `id`/`type`. Assistant turns that carried a
- * tool call are translated; everything else passes through untouched.
+ * Our `ChatMessage` already matches the OpenAI shape for role/content. Two seams
+ * need translating for Groq's contract:
+ *
+ *   - assistant `tool_calls`: internally they carry a parsed args object; OpenAI
+ *     wants a stringified `arguments`, a `type`, and the provider-assigned `id`.
+ *   - `role:"tool"` results: OpenAI *requires* `tool_call_id` linking the result
+ *     to its call — omit it and Groq 400s. Ollama has neither field and doesn't
+ *     care; this translation is Groq's job, not the governance layer's.
+ *
+ * The `id` on each assistant tool_call and the `tool_call_id` on its result come
+ * from the same internal call id (Groq's own id, captured off the stream), so
+ * the pairing Groq validates holds. A missing id falls back to a positional
+ * `call_N` — kept consistent between the two sides so the link never breaks.
  */
 function toOpenAIMessages(messages: ChatMessage[]): Record<string, unknown>[] {
   return messages.map((m) => {
@@ -230,7 +239,7 @@ function toOpenAIMessages(messages: ChatMessage[]): Record<string, unknown>[] {
         role: "assistant",
         content: m.content,
         tool_calls: m.tool_calls.map((tc, i) => ({
-          id: `call_${i}`,
+          id: tc.id ?? `call_${i}`,
           type: "function",
           function: {
             name: tc.function.name,
@@ -238,6 +247,9 @@ function toOpenAIMessages(messages: ChatMessage[]): Record<string, unknown>[] {
           },
         })),
       };
+    }
+    if (m.role === "tool") {
+      return { role: "tool", content: m.content, tool_call_id: m.tool_call_id ?? "call_0" };
     }
     return { role: m.role, content: m.content };
   });
