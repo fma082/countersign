@@ -93,6 +93,25 @@ yet — session state stays in memory, Reset returns to the seed. The deploy is
   (label only), `GROQ_THROTTLE_MS`, `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`.
   `NEXT_PUBLIC_MODEL_PROVIDER` is the only public one and carries no secret.
 
+### distDir fix — build must stay on `.next` for Vercel (2026-07-23)
+
+- **Symptom.** Vercel failed: "output directory `.next` was not found". The
+  custom `distDir` wrote the production build to `.next-build`, but Vercel only
+  ever looks at the default `.next`.
+- **Cause.** The split keyed on `NODE_ENV` — `production ? ".next-build" :
+  ".next-dev"` — to stop local `next dev` and `next build` from sharing a
+  `.next` (a mixed cache pushes Turbopack into a phantom recompile loop). But
+  Vercel runs only `build`, so it hit the `.next-build` branch and lost the
+  output.
+- **Fix.** Key on `development` instead: `next dev` → `.next-dev`, every build
+  (local *and* Vercel) → the default `.next`. Dev and build still never share a
+  dir locally, so the original loop can't return, and Vercel finds its output.
+  No host special-casing (`process.env.VERCEL`) needed — the divergence is about
+  the command, not the platform. `.gitignore`, `npm run clean`, the tsconfig
+  `include` (generated route types now under `.next/types`), and CLAUDE.md were
+  updated for the renamed dir. `next build` verified locally: output at `.next`
+  with a `BUILD_ID`.
+
 ---
 
 ## Iteration 3 — presentation: guided flow + home (2026-07-22)

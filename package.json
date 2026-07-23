@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf .next-dev .next-build"
+    "clean": "rm -rf .next-dev .next"
   },
   "dependencies": {
     "clsx": "^2.1.1",

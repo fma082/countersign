@@ -3,9 +3,8 @@
 /.pnp
 .pnp.*
 
-# next.js build output (distDir split by environment — see next.config.ts)
+# next.js build output (dev writes .next-dev; every build uses .next — see next.config.ts)
 /.next-dev
-/.next-build
 /.next
 /out
 
@@ -31,3 +30,4 @@ next-env.d.ts
 
 # scenario scratch — raw drops live here, not in the tree
 _inbox/
+.vercel

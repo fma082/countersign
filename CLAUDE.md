@@ -63,9 +63,11 @@ the whole scenario.
 
 ## Hygiene
 
-- `next dev` and `next build` use **separate** `distDir`s (`.next-dev` /
-  `.next-build`, set in `next.config.ts`) so a mixed `.next` can't push
-  Turbopack into a phantom recompilation loop. `npm run clean` removes both.
+- `next dev` writes to `.next-dev`; every **build** (local and Vercel) uses the
+  default `.next` (set in `next.config.ts`, keyed on `NODE_ENV=development`) so a
+  mixed `.next` can't push Turbopack into a phantom recompilation loop. Build
+  must stay on the default `.next` — Vercel fails if the output isn't there.
+  `npm run clean` removes both.
 - Keep `tsc --noEmit` and `next build` clean before committing.
 - Raw drops live in `_inbox/` (gitignored). Move anything real into `src/`.
 
@@ -73,7 +75,7 @@ the whole scenario.
 
 ```bash
 npm run dev         # dev server (distDir .next-dev)
-npm run build       # production build (distDir .next-build)
+npm run build       # production build (distDir .next, the Vercel default)
 npm run typecheck   # tsc --noEmit
 npm run clean       # remove both distDirs
 ```
