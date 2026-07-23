@@ -14,12 +14,12 @@
  * will execute; the client can shrink a gate's effect but never define it.
  */
 
-import { streamChat } from "@/lib/engine/provider";
+import { streamChatResilient } from "@/lib/engine/resilient";
 import { govern, executeGate, executeUndo, TOOLS } from "@/lib/engine/tools";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
 import { rateLimit, clientIp } from "@/lib/engine/rate-limit";
 import { resetCatalog } from "@/lib/scenario/catalog";
-import type { ChatMessage, StreamFrame, UndoSpec, ViewEffect } from "@/lib/engine/types";
+import type { ChatMessage, ErrorReason, StreamFrame, UndoSpec, ViewEffect } from "@/lib/engine/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -138,7 +138,12 @@ function oneFrame(frame: StreamFrame, status: number, extra?: Record<string, str
 
 type Emit = (frame: StreamFrame) => void;
 
-/** A normal turn: stream, govern tools, run reads/reversibles, stop at a gate. */
+/**
+ * A normal turn: stream (with transient-failure retries), govern tools, run
+ * reads/reversibles, stop at a gate. A failure only surfaces once the resilient
+ * wrapper has spent its retries; it carries a typed `reason` so the client can
+ * reframe it (a pause) or report it (a real fault).
+ */
 async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
   if (history.length <= 1) resetCatalog();
 
@@ -147,10 +152,10 @@ async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
   for (let round = 0; round < MAX_ROUNDS; round++) {
     let text = "";
     const pending: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
-    let errored = false;
+    let streamError: { message: string; reason?: ErrorReason } | null = null;
     let holding = false;
 
-    for await (const frame of streamChat(messages, TOOLS)) {
+    for await (const frame of streamChatResilient(messages, TOOLS)) {
       if (frame.type === "token") {
         text += frame.text;
         if (!holding && text.trimStart().startsWith("{")) holding = true;
@@ -158,11 +163,15 @@ async function runTurn(history: ChatMessage[], emit: Emit): Promise<void> {
       } else if (frame.type === "toolCall") {
         pending.push({ id: frame.id, name: frame.name, args: frame.args });
       } else if (frame.type === "error") {
-        emit({ type: "error", message: frame.message, reason: frame.reason });
-        errored = true;
+        // The wrapper only yields an error once retries are spent.
+        streamError = { message: frame.message, reason: frame.reason };
       }
     }
-    if (errored) return;
+
+    if (streamError) {
+      emit({ type: "error", message: streamError.message, reason: streamError.reason });
+      return;
+    }
 
     if (pending.length === 0 && holding) {
       const rescued = salvageToolCall(text);

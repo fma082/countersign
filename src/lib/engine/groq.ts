@@ -124,7 +124,10 @@ export async function* streamChat(
         }
 
         if (chunk.error) {
-          yield { type: "error", message: errText(chunk.error), reason: "provider_down" };
+          // Mid-stream provider error — treat as a transient pause. It arrives
+          // after output has begun, so the resilient wrapper won't retry it, but
+          // the client still reads it as a pause, not a fault.
+          yield { type: "error", message: errText(chunk.error), reason: "model_paused" };
           return;
         }
 
@@ -274,8 +277,15 @@ function errText(e: { message?: string } | string): string {
   return typeof e === "string" ? e : (e.message ?? "Provider error.");
 }
 
-/** Non-2xx from Groq. Auth, quota, and 5xx all read as "the live model isn't
- *  available" to the visitor — a stack trace helps no one at this door. */
+/**
+ * Non-2xx from Groq. Two kinds, and the distinction matters — one gets retried
+ * and reframed as a pause, the other is a real bug that must not be retried:
+ *
+ *   408 / 429 / 5xx  → `model_paused`   — capacity / overload / transient. The
+ *                      resilient wrapper retries these before surfacing.
+ *   400 / 401 / 403 / 404 / 422 → `provider_error` — a contract or auth fault.
+ *                      Retrying just hammers a request that will never succeed.
+ */
 async function httpError(res: Response): Promise<RawFrame> {
   let detail = "";
   try {
@@ -284,22 +294,29 @@ async function httpError(res: Response): Promise<RawFrame> {
   } catch {
     /* body not JSON — status alone is enough */
   }
+  const transient = res.status === 408 || res.status === 429 || res.status >= 500;
+  if (transient) {
+    return {
+      type: "error",
+      message: "The model is out of capacity right now.",
+      reason: "model_paused",
+    };
+  }
   const message =
     res.status === 401 || res.status === 403
-      ? "The live model rejected the request (auth)."
-      : res.status === 429
-        ? "The live model is out of capacity right now."
-        : `The live model returned ${res.status}.${detail ? ` ${detail}` : ""}`;
-  return { type: "error", message, reason: "provider_down" };
+      ? "The model rejected the request (auth)."
+      : `The model returned ${res.status}.${detail ? ` ${detail}` : ""}`;
+  return { type: "error", message, reason: "provider_error" };
 }
 
+/** A transport failure (DNS, connection refused, network drop) is transient —
+ *  reframe as a pause and let the wrapper retry. Detail stays in server logs. */
 function reachError(err: unknown): RawFrame {
   const msg = err instanceof Error ? err.message : String(err);
-  // Detail stays in server logs; the visitor sees a dignified line, not a trace.
   console.error("[groq] transport error:", msg);
   return {
     type: "error",
-    message: "Can't reach the live model right now.",
-    reason: "provider_down",
+    message: "Can't reach the model right now.",
+    reason: "model_paused",
   };
 }

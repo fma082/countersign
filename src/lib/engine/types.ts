@@ -42,12 +42,20 @@ export interface ProviderTool {
 }
 
 /**
- * Why a stream failed, so the client can pick a dignified surface instead of a
- * stack trace. `rate_limit` is OUR per-IP throttle ("try again in a bit");
- * `provider_down` is the upstream model being unreachable or out of quota ("the
- * live model isn't available"); `generic` is everything else (retryable).
+ * Why a stream failed — drives both the server's retry decision and the client's
+ * surface. The three failure modes are deliberately distinct:
+ *
+ *   rate_limit     — OUR per-IP throttle. Not the model; "try again in a bit".
+ *   model_paused   — the model backend is transiently unavailable (out of
+ *                    capacity, 5xx, a network blip). TRANSIENT: the server
+ *                    retries before surfacing it, and when it does surface it is
+ *                    an EXPECTED pause, not a fault — the system's guarantees
+ *                    hold without the model.
+ *   provider_error — a permanent provider fault (contract 400, auth). A real bug
+ *                    to report, NOT capacity: never retried, shown as an error.
+ *   generic        — a client-side interruption (the stream dropped).
  */
-export type ErrorReason = "rate_limit" | "provider_down" | "generic";
+export type ErrorReason = "rate_limit" | "model_paused" | "provider_error" | "generic";
 
 // ── Layer 1 output: raw frames from the adapter ────────────────────────────
 export type RawFrame =
