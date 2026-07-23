@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, PauseCircle } from "lucide-react";
 import { isBusy, isGateOpen } from "@/lib/copilot-statechart";
 import type { StaleUndo } from "@/lib/engine/types";
 import type { useCopilot } from "./use-copilot";
@@ -10,7 +10,7 @@ import { StatusBadge } from "./status-badge";
 import { ToolCard } from "./tool-card";
 import { GateCard } from "./gate-card";
 import { Composer } from "./composer";
-import { ResponseError, ResponseFallback, ThinkingDots } from "./response-loading";
+import { ResponseError, ResponsePaused, ResponseRateLimit, ThinkingDots } from "./response-loading";
 
 type Copilot = ReturnType<typeof useCopilot>;
 
@@ -44,7 +44,7 @@ export function CopilotPanel({
     <div className="flex h-full min-h-0 flex-1 flex-col bg-panel">
       <header className="flex items-center justify-between border-b border-line px-4 py-3.5">
         <span className="text-[14px] font-medium text-ink">Copilot</span>
-        <StatusBadge status={status} />
+        <StatusBadge status={status} errorReason={errorReason} />
       </header>
 
       <div ref={logRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
@@ -106,6 +106,22 @@ export function CopilotPanel({
                   {item.text}
                 </p>
               );
+            case "paused":
+              // The model is paused; the real tool effect lands right after this.
+              // Borrows the gate's action accent — an expected pause, not a fault.
+              return (
+                <div
+                  key={item.id}
+                  className="rounded-token border border-action/60 bg-panel px-3 py-2.5"
+                >
+                  <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-ink-3">
+                    <span className="size-1.5 rounded-full bg-action" aria-hidden />
+                    <PauseCircle size={11} aria-hidden />
+                    Model paused
+                  </span>
+                  <p className="mt-1 text-[11.5px] leading-relaxed text-ink-2">{item.text}</p>
+                </div>
+              );
           }
         })}
 
@@ -113,10 +129,14 @@ export function CopilotPanel({
             the statechart — the dots vanish the instant the first token lands. */}
         {status === "thinking" && <ThinkingDots />}
         {status === "error" &&
-          (errorReason === "generic" ? (
-            <ResponseError message={state.error} onRetry={retry} />
+          (errorReason === "model_paused" ? (
+            // Expected pause — reframed, not an error surface.
+            <ResponsePaused message={state.error} onRetry={retry} />
+          ) : errorReason === "rate_limit" ? (
+            <ResponseRateLimit message={state.error} onRetry={retry} />
           ) : (
-            <ResponseFallback reason={errorReason} message={state.error} onRetry={retry} />
+            // provider_error (a real fault) or a client-side interruption.
+            <ResponseError message={state.error} onRetry={retry} />
           ))}
 
         {stale && <StaleConfirm stale={stale} onConfirm={confirmStale} onCancel={cancelStale} />}

@@ -4,6 +4,89 @@ A living log of decisions and iterations. Newest first.
 
 ---
 
+## Iteration 5 — resilience: the system guarantees, not the model (2026-07-23)
+
+**Frame.** The demo runs on a free-tier model that intermittently answers "out
+of capacity". The thesis of Countersign is that the *system* — not the model —
+enforces the guarantees. This iteration makes that literal: when the model is
+paused, the guided flow still completes, the tools still run, the gate still
+resolves. The only thing lost is the model's spoken narration, and that is
+declared, never faked. **The system guarantees, not the model.**
+
+Governing constraint held throughout: **never simulate a model response.** The
+honest degradation shows the tool's REAL server-side effect and says the model
+is paused — it never passes pre-written text off as generated.
+
+### Shipped
+
+- **Auto-retry with backoff (`resilient.ts`).** A wrapper around the provider
+  stream retries a *transient* failure (`model_paused`: capacity / 5xx / network)
+  with growing backoff (`MODEL_RETRY_BACKOFF_MS`, default `1000,2500,5000`)
+  before any failure state shows. During the wait nothing is emitted — the turn
+  stays in `thinking`, so the log's loading indicator already reads as "working".
+  A *permanent* fault (`provider_error`: contract 400, auth) is surfaced at once,
+  never retried. A retry only fires if the failure was the attempt's first frame
+  (never after output has streamed — no duplication).
+- **Guided flow that always completes (server-side degradation).** Each guided
+  step carries a `fallback` — the tool it is known to run. When the model can't
+  be reached after retries, the route runs that tool through the SAME `govern`
+  path a model-driven call uses: real decision, real effect, real gate, real
+  `targetIds`, real partial-approval. Only the narration is replaced — by a
+  server-authored `paused` note. The four steps reach the gate and its
+  resolution with or without the model. If a tool had *already* run when a later
+  round failed, the turn ends with a paused note + `done` (the effect stands;
+  only the summary is missing) — no re-run, no double effect.
+- **Reframed model-paused state (Part 3).** A pause is no longer dressed as an
+  error. It borrows the approval gate's register — the action-coloured accent,
+  the calm uppercase badge — because both are "the system is holding on purpose".
+  Badge reads `MODEL PAUSED · SYSTEM INTACT`; the header status dot uses the
+  gate's action colour, not error red; the copy reaffirms the thesis instead of
+  apologising ("Countersign's guarantees hold without it — reads, undo, and the
+  approval gate are enforced by the system, not the model"). A real fault
+  (`provider_error`) keeps the error treatment — the two are now visibly
+  distinct.
+
+### Decisions worth remembering
+
+- **Degradation is server-side, keyed on a per-step fallback tool.** The client
+  passes the step's known tool; the server, on an exhausted pre-tool failure,
+  executes it via `govern`. This keeps "server resolves, client reflects" intact
+  (the degraded effect is server-resolved, never client-fabricated) and lets the
+  statechart and guided orchestrator see an ordinary completion — no new states,
+  no special-casing. The engine, statechart, and governance logic are unchanged;
+  this is a new entrypoint into the same governance plus a retry wrapper.
+- **Three distinct failure modes, by design.** `model_paused` (transient →
+  retried, reframed as a pause), `provider_error` (permanent → not retried, a
+  real error to report), `rate_limit` (our own cap). A first-class `reason` on
+  the frame drives both the retry decision and the surface — never string
+  sniffing. `provider_down` from iteration 4 is gone, split into the two precise
+  reasons.
+- **The reconnecting text was dropped as unnecessary.** The retry window is
+  already covered by the `thinking` loading indicator (the transient failure
+  fails at connect time, before any token), so the visitor sees continuous
+  "working" without an extra label. Kept the surface simpler.
+- **`MODEL_FORCE_ERROR` test affordance.** Off unless set. Forces every provider
+  attempt to fail with a given reason, so the retry→degrade path is testable
+  without waiting on the real backend to be down.
+
+### Validated (forced failure + model available)
+
+- Forced `model_paused` (fast backoff): guided step 1 → paused note + **real**
+  `filter_view` (3 below-cost rows, real margins −2.2/−5.5/−6.1) + effect + done;
+  step 4 → paused note + **real** gate (6 targets, active sale excluded, warn
+  flags); **approve** → real mutations + margins + server closing, no model. ~0.36s
+  total confirms the ~300ms backoff ran before degrading.
+- Free input, no fallback, forced `model_paused` → `error{reason:model_paused}`
+  → reframed paused surface.
+- Forced `provider_error` (5s backoff configured): free input surfaced in
+  **0.05s** — no retry hammering; a guided step still degraded to complete.
+- Model available (no force): guided step used the real model — narration
+  tokens + real tool + done, **zero** paused frames; the fallback is ignored.
+- Paused surfaces use only theme-aware tokens (the gate card's set), so light +
+  dark follow structurally. `tsc` + `next build` clean.
+
+---
+
 ## Iteration 4 — public deploy: Groq adapter + endpoint guards (2026-07-23)
 
 **Goal:** a stable public link for portfolio/interviews. Swap the local Ollama

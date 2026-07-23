@@ -1,7 +1,6 @@
 "use client";
 
-import { AlertTriangle, CloudOff, RotateCcw, Timer } from "lucide-react";
-import type { ErrorReason } from "@/lib/engine/types";
+import { AlertTriangle, PauseCircle, RotateCcw, Timer } from "lucide-react";
 
 /**
  * Pattern 02 — AI Response Loading States, realized for the copilot log.
@@ -59,41 +58,69 @@ export function ResponseError({
 }
 
 /**
- * The dignified fallback — shown when the failure is *expected* rather than a
- * bug: the shared demo model is unavailable, or the visitor hit the per-IP rate
- * limit. This link lives for years and gets opened cold from old PDFs and
- * LinkedIn; whoever lands here in an interview must see an explained state, not
- * a stack trace. Distinct copy per reason, and a note on what Countersign is so
- * the page still communicates when the model can't.
+ * Model paused — an EXPECTED pause, not a fault. It borrows the approval gate's
+ * register (the action-coloured accent, the calm uppercase badge) precisely
+ * because both are "the system is holding on purpose", not "something broke". It
+ * is deliberately NOT in the error vocabulary — no red, no alarm — and the copy
+ * reaffirms the thesis instead of apologising: the guarantees hold without the
+ * model. Used when the model's retries are spent (`model_paused`).
  */
-export function ResponseFallback({
-  reason,
+export function ResponsePaused({
   message,
   onRetry,
 }: {
-  reason: ErrorReason;
   message: string | null;
   onRetry: () => void;
 }) {
-  const rate = reason === "rate_limit";
-  const Icon = rate ? Timer : CloudOff;
-  const heading = rate ? "Demo request limit reached" : "The live model isn't available right now";
-  const fallbackBody = rate
-    ? "This public demo caps requests per visitor to stay within a free-tier quota. Give it a moment and try again."
-    : "The hosted model that answers here is temporarily unreachable. This isn't a bug in the demo — the model is a shared, free-tier backend.";
+  return (
+    <div className="rounded-[10px] border border-action bg-panel px-3.5 py-3">
+      <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-ink-3">
+        <span className="size-1.5 rounded-full bg-action" aria-hidden />
+        <PauseCircle size={12} aria-hidden />
+        Model paused · system intact
+      </span>
+      <p className="mt-1.5 text-[13px] font-medium text-ink">
+        {message ?? "The model is paused."}
+      </p>
+      <p className="mt-1 text-[12px] leading-relaxed text-ink-2">
+        Countersign&rsquo;s guarantees hold without it — reads, undo, and the
+        approval gate are enforced by the system, not the model. What&rsquo;s on
+        hold is only the model&rsquo;s spoken reply.
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-2.5 inline-flex items-center gap-1.5 rounded-[6px] border border-line px-2.5 py-1 text-[11.5px] text-ink-2 transition-colors hover:border-line-strong hover:text-ink"
+      >
+        <RotateCcw size={11} />
+        Try again
+      </button>
+    </div>
+  );
+}
 
+/**
+ * Rate limited — our OWN per-IP cap, not the model. Also a calm, expected state
+ * (the demo protecting a free-tier quota), so it stays out of the error
+ * vocabulary too, with its own copy.
+ */
+export function ResponseRateLimit({
+  message,
+  onRetry,
+}: {
+  message: string | null;
+  onRetry: () => void;
+}) {
   return (
     <div className="rounded-token border border-line bg-field px-3.5 py-3">
       <span className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.1em] text-ink-3">
-        <Icon size={12} aria-hidden />
-        {rate ? "Rate limited" : "Model offline"}
+        <Timer size={12} aria-hidden />
+        Rate limited
       </span>
-      <p className="mt-1.5 text-[13px] font-medium text-ink">{heading}</p>
-      <p className="mt-1 text-[12px] leading-relaxed text-ink-2">{message ?? fallbackBody}</p>
-      <p className="mt-2 text-[11.5px] leading-relaxed text-ink-3">
-        Countersign is a demo of governed AI actions — reads run freely, single
-        writes can be undone, and destructive changes stop at a human gate. That
-        design is intact whether or not the model is answering.
+      <p className="mt-1.5 text-[13px] font-medium text-ink">Demo request limit reached</p>
+      <p className="mt-1 text-[12px] leading-relaxed text-ink-2">
+        {message ??
+          "This public demo caps requests per visitor to stay within a free-tier quota. Give it a moment and try again."}
       </p>
       <button
         type="button"
