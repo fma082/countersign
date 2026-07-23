@@ -8,11 +8,17 @@
  * from here or from Ollama.
  *
  * Transport: fetch + ReadableStream against Groq's OpenAI-compatible
- * /chat/completions with `stream: true` (SSE). The one Groq-specific concern
- * that lives here: tool calls arrive OpenAI-style —
- * `choices[].delta.tool_calls`, whose `arguments` stream as string fragments
- * keyed by `index`. We accumulate per index and translate to the internal
- * `toolCall` RawFrame at the end.
+ * /chat/completions with `stream: true` (SSE). Two Groq-specific concerns live
+ * here and nowhere else:
+ *
+ *   1. Tool calls arrive OpenAI-style — `choices[].delta.tool_calls`, whose
+ *      `arguments` stream as string fragments keyed by `index`. We accumulate
+ *      per index and translate to the internal `toolCall` RawFrame at the end.
+ *   2. Throttling. Groq answers so fast (a full turn in ~22ms) that streaming
+ *      and every loading state are invisible — text lands in one block. We
+ *      insert a small, configurable delay between content deltas so the cadence
+ *      is legible, matching what warm local Ollama gave for free. See
+ *      DEV_STATE.md — the speed is an anti-feature for these trust patterns.
  */
 
 import type { ChatMessage, ProviderTool, RawFrame, ToolCall } from "./types";
@@ -20,6 +26,12 @@ import type { ChatMessage, ProviderTool, RawFrame, ToolCall } from "./types";
 const GROQ_HOST = process.env.GROQ_HOST ?? "https://api.groq.com/openai/v1";
 export const MODEL = process.env.GROQ_MODEL ?? "llama-3.1-8b-instant";
 export const PROVIDER_LABEL = "Groq";
+
+/** Milliseconds to wait between streamed content deltas. Configurable so it can
+ *  be tuned per environment; 0 disables the throttle. Groq only. */
+const THROTTLE_MS = Number(process.env.GROQ_THROTTLE_MS ?? "28");
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ── OpenAI-compatible streaming shapes ──────────────────────────────────────
 interface DeltaToolCall {
@@ -118,7 +130,10 @@ export async function* streamChat(
 
         const choice = chunk.choices?.[0];
         const content = choice?.delta?.content;
-        if (content) yield { type: "token", text: content };
+        if (content) {
+          if (THROTTLE_MS > 0) await sleep(THROTTLE_MS);
+          yield { type: "token", text: content };
+        }
 
         for (const tc of choice?.delta?.tool_calls ?? []) {
           const idx = tc.index ?? 0;
