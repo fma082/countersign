@@ -130,3 +130,7 @@ Northbase and its entire catalog are **fictional**. Nothing here reflects any
 real brand, customer, dataset, or system. The catalog's quirks — expired sales
 that never cleared, resulting negative margins — are planted on purpose so the
 agent can *discover* problems rather than be told about them.
+
+---
+
+<sub>Deploy pipeline verified — 2026-07-23.</sub>
