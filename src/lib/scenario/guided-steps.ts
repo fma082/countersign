@@ -39,7 +39,7 @@ export const GUIDED_STEPS: GuidedStep[] = [
     tier: "read · runs on its own",
     prompt: "What is causing those negative margins? Filter the table to the products still on an expired sale.",
     note: "**Still a read.** What you see changed. What exists didn't.",
-    fallback: { tool: "filter_view", args: { filter: "expired_sales" } },
+    fallback: { tool: "filter_view", args: { filter: "expired_sale" } },
   },
   {
     label: "Raise the price on the SD Card Case",

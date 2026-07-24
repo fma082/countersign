@@ -18,6 +18,7 @@
  */
 
 import {
+  activeProducts,
   activeSales,
   allProducts,
   applyClearExpiredSales,
@@ -47,12 +48,18 @@ import type {
 } from "./types";
 
 // ── Selector vocabulary ─────────────────────────────────────────────────────
+// Read metrics live on distinct AXES. Keeping the names axis-explicit stops a
+// small model from crossing them (e.g. "active products" is a STATUS, not a sale).
 const METRICS = [
-  "expired_sales",
-  "active_sales",
+  // sale axis — is there a promo, and is it still valid?
+  "on_sale", // a live, valid promo right now
+  "expired_sale", // a promo whose end date has passed, not yet cleared
+  // status axis — active vs discontinued
+  "active",
+  "discontinued",
+  // other axes
   "below_reorder",
   "negative_margin",
-  "discontinued",
   "all",
 ] as const;
 type Metric = (typeof METRICS)[number];
@@ -69,16 +76,21 @@ interface Resolved {
 
 function resolveMetric(metric: Metric): Resolved {
   switch (metric) {
-    case "expired_sales":
-      return { rows: expiredSales(), phrase: "products still on an expired sale price" };
-    case "active_sales":
+    // sale axis
+    case "on_sale":
       return { rows: activeSales(), phrase: "products on an active, valid sale" };
+    case "expired_sale":
+      return { rows: expiredSales(), phrase: "products still on an expired sale price" };
+    // status axis
+    case "active":
+      return { rows: activeProducts(), phrase: "products with active status" };
+    case "discontinued":
+      return { rows: discontinuedProducts(), phrase: "products that are discontinued" };
+    // other axes
     case "below_reorder":
       return { rows: belowReorderProducts(), phrase: "products below their reorder point" };
     case "negative_margin":
       return { rows: negativeMargin(), phrase: "products selling below cost" };
-    case "discontinued":
-      return { rows: discontinuedProducts(), phrase: "products that are discontinued" };
     case "all":
       return { rows: allProducts(), phrase: "products in the catalog" };
   }

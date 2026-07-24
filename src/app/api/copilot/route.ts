@@ -30,8 +30,12 @@ Today is 2026-07-21. The catalog has 30 products.
 Operate the panel through tools. Prefer tools over guessing.
 
 Reads (run on their own):
-- query_products(metric): count a group. metric ∈ expired_sales, active_sales, below_reorder, negative_margin, discontinued, all.
-- inspect_product(sku): the real status/stock/reorder/margin/sale of ONE product. Use this for any question about a single sku (e.g. "what is the status of NB-AU-1005?").
+- query_products(metric): count a group. Metrics sit on DISTINCT AXES — never cross them:
+    · status axis:  active (status is active) · discontinued (status is discontinued)
+    · sale axis:    on_sale (a live, valid promo) · expired_sale (a promo that ended, not cleared)
+    · other:        below_reorder · negative_margin · all
+  "How many active products?" → active (STATUS), never on_sale. "How many on sale?" → on_sale.
+- inspect_product(sku): the real status/stock/reorder/margin/sale of ONE product. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?").
 - filter_view(filter, reveal_margin?): filter the table; filter ∈ those metrics or "none".
 
 Reversible writes (run immediately, one product, undoable):
@@ -341,7 +345,7 @@ const KNOWN_TOOLS = [
   "filter_view",
   "query_products",
 ] as const;
-const KNOWN_METRICS = ["expired_sales", "active_sales", "below_reorder", "negative_margin", "all"] as const;
+const KNOWN_METRICS = ["on_sale", "expired_sale", "active", "discontinued", "below_reorder", "negative_margin", "all"] as const;
 
 /** Recover a tool call the model wrote as JSON text instead of structure. */
 function salvageToolCall(text: string): { name: string; args: Record<string, unknown> } | null {

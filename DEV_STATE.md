@@ -7,10 +7,25 @@ A living log of decisions and iterations. Newest first.
 ## The tool surface bounds what the model can do wrong (2026-07-24)
 
 **Principle.** A gap in the READ vocabulary forces a small model to improvise
-with the nearest-looking tool — and the nearest tool can be *destructive*. You
-don't correct the model; you design the surface so ambiguity can't escalate.
-Same lesson as the earlier `set_web_visible` finding (require an explicit
-direction rather than let the model guess one), from another angle.
+with the nearest-looking tool — and the nearest tool can be *destructive*, or
+just answer a different question. You don't correct the model; you design the
+surface so ambiguity can't escalate. Same lesson as the earlier `set_web_visible`
+finding (require an explicit direction rather than let the model guess one), from
+another angle.
+
+**Corollary — name by axis, so the model can't cross them (2026-07-24).**
+"How many active products?" returned **1**. The read vocabulary mixed two axes —
+STATUS (active/discontinued) and SALE (has a promo / promo expired) — and only
+the sale side had a near-miss name: `active_sales`. With no status read for
+"active", the model grabbed `active_sales` (1 product, the control sale) and
+answered a different question. Fix: complete the status axis (`active` →
+`activeProducts()`) and rename the sale metrics so the axes read explicitly —
+`active_sales` → **`on_sale`**, `expired_sales` → **`expired_sale`** (the
+`clear_expired_sales` *tool* keeps its name; only the metric strings changed,
+updated everywhere they're referenced). The system prompt now lists the metrics
+grouped by axis with a worked example ("active products = STATUS, not on_sale").
+Validated EN + ES: "active products" → 27 (status); "on sale" → 1 (sale). tsc +
+build clean; additive to tools/governance only.
 
 **Found in test.** Two read intents escalated because no read tool fit:
 - *"list discontinued products"* → there was no `discontinued` read metric, so the
