@@ -1,4 +1,4 @@
-import { TrendingDown } from "lucide-react";
+import { Ban, TrendingDown } from "lucide-react";
 import type { PublicProduct } from "@/lib/scenario/catalog";
 import { cn } from "@/lib/cn";
 
@@ -138,10 +138,12 @@ function StatusPill({ status }: { status: PublicProduct["status"] }) {
   return (
     <span
       className={cn(
-        "rounded-full border px-2.5 py-0.5 text-[11px] capitalize",
-        off ? "border-line-strong text-ink-3" : "border-line text-ink-2",
+        "inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] capitalize",
+        // Warning state — amber, never color alone: paired with the Ban icon.
+        off ? "border-warning text-warning" : "border-line text-ink-2",
       )}
     >
+      {off && <Ban size={11} aria-hidden />}
       {status}
     </span>
   );
