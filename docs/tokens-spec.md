@@ -1,8 +1,9 @@
 # Token system — source of truth
 
 Countersign is monochrome. There is **no brand color**. The only chromatic
-tokens are desaturated red/green, reserved for error and success, and even those
-never carry meaning alone — they are always paired with an icon and text.
+tokens are desaturated red / green / amber, reserved for error, success, and
+warning (e.g. a discontinued product), and even those never carry meaning
+alone — they are always paired with an icon and text.
 
 The system has two layers. Nothing in a component may hardcode a color,
 spacing, or radius; everything routes through a token.
@@ -32,7 +33,7 @@ palette from which the semantic layer is composed.
 | `n900` | `#1C1B18` |
 | `n975` | `#0C0C0B` |
 
-### State (error / success only)
+### State (error / success / warning)
 
 | Token       | Hex       |
 | ----------- | --------- |
@@ -40,6 +41,8 @@ palette from which the semantic layer is composed.
 | `red-400`   | `#D98A82` |
 | `green-600` | `#4A7A56` |
 | `green-400` | `#8FB89A` |
+| `amber-600` | `#B4863C` |
+| `amber-400` | `#D9B37F` |
 
 ### Non-color primitives
 
@@ -74,6 +77,7 @@ so the mode inverts at runtime without recompiling.
 | `border/strong`       | `border-line-strong`| `n400`      | `n600`      |
 | `text/error`          | `text-error`        | `red-600`   | `red-400`   |
 | `text/success`        | `text-success`      | `green-600` | `green-400` |
+| `text/warning`        | `text-warning`      | `amber-600` | `amber-400` |
 
 > The CSS variables keep the **spec names** (`--surface-panel`, `--text-primary`,
 > …) so they read clearly in DevTools. `@theme inline` maps them to the
@@ -109,5 +113,6 @@ Browse them live at `/tokens`.
 - **Color is never the only signal.** Error and success states pair the color
   token with an icon and text (e.g. the `invalid` tool badge, the below-cost
   margin cell, the gate's warning rows).
-- **State color is rationed.** Red and green appear only for error/success.
-  Everything else — including the live engine-status dot — stays neutral.
+- **State color is rationed.** Red, green, and amber appear only for
+  error / success / warning (warning e.g. a discontinued product). Everything
+  else — including the live engine-status dot — stays neutral.

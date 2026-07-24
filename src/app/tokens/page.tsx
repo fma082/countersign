@@ -11,6 +11,7 @@ const NEUTRALS = [
 const STATE = [
   ["red-600", "#B4443C"], ["red-400", "#D98A82"],
   ["green-600", "#4A7A56"], ["green-400", "#8FB89A"],
+  ["amber-600", "#B4863C"], ["amber-400", "#D9B37F"],
 ] as const;
 
 // [semantic token, utility, light primitive, dark primitive]
@@ -27,6 +28,7 @@ const TEXT = [
   ["text/tertiary", "text-ink-3", "n400", "n600"],
   ["text/error", "text-error", "red-600", "red-400"],
   ["text/success", "text-success", "green-600", "green-400"],
+  ["text/warning", "text-warning", "amber-600", "amber-400"],
 ] as const;
 
 const STRUCTURE = [
@@ -64,7 +66,7 @@ export default function TokensPage() {
         </div>
       </Section>
 
-      <Section title="Primitives — state (error / success only)">
+      <Section title="Primitives — state (error / success / warning)">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {STATE.map(([name, hex]) => (
             <Swatch key={name} name={name} hex={hex} />

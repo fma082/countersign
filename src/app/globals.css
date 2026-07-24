@@ -29,11 +29,13 @@
     --n900: #1c1b18;
     --n975: #0c0c0b;
 
-    /* State primitives — desaturated, error/success only. */
+    /* State primitives — desaturated, error / success / warning. */
     --red-600: #b4443c;
     --red-400: #d98a82;
     --green-600: #4a7a56;
     --green-400: #8fb89a;
+    --amber-600: #b4863c;
+    --amber-400: #d9b37f;
 
     /* Non-color primitives. */
     --radius: 8px;
@@ -57,6 +59,7 @@
 
     --text-error: var(--red-600);
     --text-success: var(--green-600);
+    --text-warning: var(--amber-600);
   }
 
   .dark {
@@ -78,6 +81,7 @@
 
     --text-error: var(--red-400);
     --text-success: var(--green-400);
+    --text-warning: var(--amber-400);
   }
 }
 
@@ -92,7 +96,7 @@
  *   text-on-action                           → text/on-action
  *   bg-action / text-action / border-action  → interactive/primary
  *   border-line / border-line-strong         → border/{default,strong}
- *   text-error / text-success                → text/{error,success}
+ *   text-error / text-success / text-warning → text/{error,success,warning}
  */
 @theme inline {
   --color-page: var(--surface-page);
@@ -112,6 +116,7 @@
 
   --color-error: var(--text-error);
   --color-success: var(--text-success);
+  --color-warning: var(--text-warning);
 
   --radius-token: var(--radius);
 

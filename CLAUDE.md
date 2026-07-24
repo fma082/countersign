@@ -37,9 +37,9 @@ provider  ──RawFrame──▶  governance (server)  ──StreamFrame──�
 - **Never hardcode** a color, spacing, or radius. Route through a token utility
   (`bg-panel`, `text-ink-2`, `border-line`, …). One-offs use the CSS variable
   directly (`var(--interactive-primary)`), never a literal hex.
-- Monochrome. The only chromatic tokens are desaturated red/green for
-  error/success, and **color is never the only signal** — pair it with an icon
-  and text.
+- Monochrome. The only chromatic tokens are desaturated red/green/amber for
+  error/success/warning (warning e.g. a discontinued product), and **color is
+  never the only signal** — pair it with an icon and text.
 - Light is the hero mode. The system supports light + dark; the swap is a
   runtime CSS-variable flip. See `docs/tokens-spec.md`.
 
