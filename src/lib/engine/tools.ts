@@ -25,6 +25,7 @@ import {
   belowReorderProducts,
   expiredSales,
   findProduct,
+  discontinuedProducts,
   getField,
   hiddenActiveProducts,
   negativeMargin,
@@ -51,6 +52,7 @@ const METRICS = [
   "active_sales",
   "below_reorder",
   "negative_margin",
+  "discontinued",
   "all",
 ] as const;
 type Metric = (typeof METRICS)[number];
@@ -75,6 +77,8 @@ function resolveMetric(metric: Metric): Resolved {
       return { rows: belowReorderProducts(), phrase: "products below their reorder point" };
     case "negative_margin":
       return { rows: negativeMargin(), phrase: "products selling below cost" };
+    case "discontinued":
+      return { rows: discontinuedProducts(), phrase: "products that are discontinued" };
     case "all":
       return { rows: allProducts(), phrase: "products in the catalog" };
   }
@@ -119,6 +123,21 @@ export const TOOLS: ProviderTool[] = [
           metric: { type: "string", enum: [...METRICS] },
         },
         required: ["metric"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "inspect_product",
+      description:
+        "Look up ONE product by its sku and report its real status, stock, reorder point, margin, and sale. Read-only. Use this for any question about a single product (e.g. \"what is the status of NB-AU-1005?\") instead of a metric count.",
+      parameters: {
+        type: "object",
+        properties: {
+          sku: { type: "string", description: "The product SKU, e.g. NB-AU-1005." },
+        },
+        required: ["sku"],
       },
     },
   },
@@ -227,6 +246,8 @@ export function govern(id: string, name: string, args: Record<string, unknown>):
   switch (name) {
     case "query_products":
       return governQuery(id, args);
+    case "inspect_product":
+      return governInspect(id, args);
     case "filter_view":
       return governFilter(id, args);
     case "update_price":
@@ -258,6 +279,45 @@ function governQuery(id: string, args: Record<string, unknown>): Governed {
     event: mk(id, "query_products", "safe", "ok", `${rows.length} ${phrase}.`, args, targetIds),
     effect,
     toolResult: JSON.stringify({ count: rows.length, metric: args.metric, skus: targetIds }),
+  };
+}
+
+/**
+ * Read a single product by sku. Safe — runs on its own. The answer is resolved
+ * from the SKU's real record (status, stock, reorder, margin, sale), so the model
+ * narrates fact instead of improvising a per-SKU claim from an unrelated count.
+ * Margin reaches the client only here, deliberately, and cost is never included.
+ */
+function governInspect(id: string, args: Record<string, unknown>): Governed {
+  const sku = typeof args.sku === "string" ? args.sku.trim() : "";
+  const p = sku ? findProduct(sku) : undefined;
+  if (!p)
+    return invalid(id, "inspect_product", args, sku ? `No product with SKU "${sku}".` : "Pass a sku to inspect.");
+
+  const margin = Math.round(marginPct(p) * 10) / 10;
+  const belowReorder = p.stock < p.reorderPoint;
+  const onSale = p.salePrice !== null;
+  const summary =
+    `${p.name} (${p.sku}) — ${p.status}, ${p.stock} in stock` +
+    `${belowReorder ? " (below reorder)" : ""}, margin ${margin}%` +
+    `${onSale ? `, on sale at ${money(p.salePrice as number)}` : ""}.`;
+  return {
+    kind: "safe",
+    event: mk(id, "inspect_product", "safe", "ok", summary, args, [p.sku]),
+    effect: {},
+    toolResult: JSON.stringify({
+      sku: p.sku,
+      name: p.name,
+      status: p.status,
+      stock: p.stock,
+      reorderPoint: p.reorderPoint,
+      belowReorder,
+      margin,
+      onSale,
+      salePrice: p.salePrice,
+      saleEnds: p.saleEnds,
+      price: p.price,
+    }),
   };
 }
 

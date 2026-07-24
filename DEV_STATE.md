@@ -4,6 +4,46 @@ A living log of decisions and iterations. Newest first.
 
 ---
 
+## The tool surface bounds what the model can do wrong (2026-07-24)
+
+**Principle.** A gap in the READ vocabulary forces a small model to improvise
+with the nearest-looking tool — and the nearest tool can be *destructive*. You
+don't correct the model; you design the surface so ambiguity can't escalate.
+Same lesson as the earlier `set_web_visible` finding (require an explicit
+direction rather than let the model guess one), from another angle.
+
+**Found in test.** Two read intents escalated because no read tool fit:
+- *"list discontinued products"* → there was no `discontinued` read metric, so the
+  model reached for `discontinue_products` (the DESTRUCTIVE write) and proposed
+  discontinuing all 27 active products. The gate caught it — but a read should
+  never surface a destructive proposal in the first place.
+- *"status of SKU X"* → there was no per-SKU tool, so the model fired
+  `query_products` with an arbitrary metric and narrated a per-SKU claim not
+  grounded in that query ("below reorder" when the truth was "discontinued").
+
+**Fix — widen the read surface, leave the write untouched.**
+- `discontinued` is now a read metric (`query_products` / `filter_view`), backed
+  by `discontinuedProducts()` in `catalog.ts` (mirrors `activeProducts()`). "List
+  / show discontinued" resolves to a safe read.
+- `inspect_product(sku)` — a new safe read returning ONE product's real status,
+  stock, reorder, margin, and sale. Server-resolved from the SKU's record, so the
+  model narrates fact instead of improvising. (Margin reaches the client only
+  here, deliberately; cost never does.)
+- `discontinue_products` is unchanged — it still exists for the real intent to
+  discontinue and still goes through the gate regardless of count. The system
+  prompt now names the read/write split explicitly.
+
+Additive to the tools/governance layer only; engine, statechart, and UI logic
+untouched.
+
+**Validated against the live model.** "List discontinued" → `query_products`
+(discontinued), safe, no gate. "Status of NB-AU-1005" → `inspect_product` →
+"discontinued". "Discontinue the hidden products" → still gates (3 targets, full
+preview). `tsc` + `next build` clean; no visual change (discontinued rows already
+render the amber warning state).
+
+---
+
 ## Iteration 5 — resilience: the system guarantees, not the model (2026-07-23)
 
 **Frame.** The demo runs on a free-tier model that intermittently answers "out

@@ -62,6 +62,12 @@ export const negativeMargin = (): Product[] =>
 export const activeProducts = (): Product[] =>
   catalog.filter((p) => p.status === "active");
 
+/** Products already marked discontinued — the READ counterpart to the
+ *  destructive `discontinue_products`, so "list discontinued" resolves to a
+ *  safe read instead of forcing the model toward the write. */
+export const discontinuedProducts = (): Product[] =>
+  catalog.filter((p) => p.status === "discontinued");
+
 /** Active products hidden from the web store — natural discontinue candidates. */
 export const hiddenActiveProducts = (): Product[] =>
   catalog.filter((p) => p.status === "active" && !p.webVisible);

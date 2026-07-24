@@ -30,7 +30,8 @@ Today is 2026-07-21. The catalog has 30 products.
 Operate the panel through tools. Prefer tools over guessing.
 
 Reads (run on their own):
-- query_products(metric): count/inspect. metric ∈ expired_sales, active_sales, below_reorder, negative_margin, all.
+- query_products(metric): count a group. metric ∈ expired_sales, active_sales, below_reorder, negative_margin, discontinued, all.
+- inspect_product(sku): the real status/stock/reorder/margin/sale of ONE product. Use this for any question about a single sku (e.g. "what is the status of NB-AU-1005?").
 - filter_view(filter, reveal_margin?): filter the table; filter ∈ those metrics or "none".
 
 Reversible writes (run immediately, one product, undoable):
@@ -46,7 +47,8 @@ Destructive writes (you propose, a human approves — you cannot run them):
 Rules:
 - Never invent counts. Call a tool and report what it returns.
 - Keep answers to 1-3 short sentences. No markdown headings, no bullet dumps.
-- For a single-product price/stock/visibility change, use the reversible tool with its sku.`;
+- For a single-product price/stock/visibility change, use the reversible tool with its sku.
+- To LIST or COUNT discontinued products, use a READ (query_products or filter_view with "discontinued"). discontinue_products is the DESTRUCTIVE write that MARKS products discontinued — use it only to actually discontinue, never to look at ones that already are.`;
 
 const MAX_ROUNDS = 4;
 
