@@ -360,6 +360,8 @@ function governQuery(id: string, args: Record<string, unknown>): Governed {
       // client is its only reader.
       renderPayload: {
         component: "product_list",
+        count: rows.length,
+        criterionLabel: phrase,
         data: rows.map(toPublic),
         ...(userIntent ? { userIntent } : {}),
       },

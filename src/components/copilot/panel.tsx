@@ -9,6 +9,7 @@ import { RichText } from "./guided";
 import { StatusBadge } from "./status-badge";
 import { ToolCard } from "./tool-card";
 import { GateCard } from "./gate-card";
+import { ProductList } from "./product-list";
 import { Composer } from "./composer";
 import { ResponseError, ResponsePaused, ResponseRateLimit, ThinkingDots } from "./response-loading";
 
@@ -88,6 +89,13 @@ export function CopilotPanel({
                   onReject={reject}
                 />
               );
+            case "render":
+              // Generative UI: the resolved rows, rendered where they landed in
+              // the turn. The model's prose stays — they are two halves of one
+              // answer, not alternatives.
+              return item.render.component === "product_list" ? (
+                <ProductList key={item.id} payload={item.render} />
+              ) : null;
             case "note":
               return (
                 <p

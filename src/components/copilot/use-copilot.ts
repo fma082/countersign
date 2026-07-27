@@ -37,23 +37,16 @@ export type LogItem =
       resolved: "pending" | "approved" | "rejected";
       excluded?: number;
     }
+  // Rows a tool resolved and handed to the client instead of to the model.
+  // It lives in the log, not beside it, so it keeps its place in the turn: the
+  // model's preamble above, the resolved rows below, in arrival order.
+  | { id: string; kind: "render"; render: RenderPayload }
   // Guided-flow signposts. Not model output — the shell drops these in.
   | { id: string; kind: "note"; text: string }
   | { id: string; kind: "closing"; text: string }
   // Server-authored honest note: the model is paused; the real tool effect
   // around this item is the system's, not a narration.
   | { id: string; kind: "paused"; text: string };
-
-/**
- * Rows a tool resolved and handed to the client instead of to the model, in
- * arrival order. Nothing renders them yet — `product_list` does not exist. The
- * channel lands first, and on its own it is verifiable: the data is here, and
- * the model's context provably does not have it.
- */
-export interface RenderItem {
-  id: string;
-  render: RenderPayload;
-}
 
 export interface CopilotCallbacks {
   onEffect(effect: ViewEffect): void;
@@ -107,7 +100,6 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
   const [log, setLog] = useState<LogItem[]>([]);
   const [gate, setGate] = useState<GatePreview | null>(null);
   const [stale, setStale] = useState<StaleUndo | null>(null);
-  const [renders, setRenders] = useState<RenderItem[]>([]);
   // Why the last turn failed — picks the fallback surface. Only read in `error`.
   const [errorReason, setErrorReason] = useState<ErrorReason>("generic");
 
@@ -231,9 +223,11 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
             break;
           }
           case "render": {
-            // The rows the model was deliberately not given. Stored, not shown —
-            // this commit only opens the channel.
-            setRenders((prev) => [...prev, { id: nextId(), render: frame.render }]);
+            // The rows the model was deliberately not given. Appended in place,
+            // so the component lands after whatever prose preceded it.
+            assistantId = null;
+            stopStreaming();
+            setLog((prev) => [...prev, { id: nextId(), kind: "render", render: frame.render }]);
             break;
           }
           case "staleUndo": {
@@ -371,7 +365,6 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
     setLog([]);
     setGate(null);
     setStale(null);
-    setRenders([]);
     historyRef.current = [];
     activeUndoRef.current = null;
     pendingUndoItemRef.current = null;
@@ -441,7 +434,6 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
     log,
     gate,
     stale,
-    renders,
     errorReason,
     setDraft,
     submit,

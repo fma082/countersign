@@ -141,6 +141,15 @@ export interface ToolEvent {
 export interface RenderPayload<T = unknown> {
   /** Which client component owns this data, e.g. "product_list". */
   component: string;
+  /**
+   * The server's own count of what it resolved — the SAME number the model was
+   * given. Rendered as the header, so it can be read against `data.length`: if
+   * the two ever disagree the component says so on screen, where a prose answer
+   * quoting one number could never expose the other.
+   */
+  count: number;
+  /** The executed criterion, in the server's wording. Never the user's. */
+  criterionLabel: string;
   data: T;
   /**
    * The user's own phrasing for what they asked, as the model reported it —
