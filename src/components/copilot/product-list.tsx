@@ -55,7 +55,16 @@ export function ProductList({ payload }: { payload: RenderPayload }) {
   const sorted = sortProductRows(rows);
 
   return (
-    <div className="overflow-hidden rounded-token border border-line bg-panel">
+    // `shrink-0` is load-bearing, not tidying. The copilot log is a flex column
+    // (`flex flex-col overflow-y-auto`), and a flex item's automatic minimum
+    // size — the thing that stops content being squashed — applies only while
+    // its own `overflow` is `visible`. This card sets `overflow-hidden` to clip
+    // the row borders under the rounded corners, which forfeits that protection
+    // and made it the ONE log item flex-shrink could crush: in the live panel it
+    // rendered 2px tall (both borders, no content) against a natural 859px,
+    // present in the DOM and invisible on screen. Every sibling survives only
+    // because it never sets `overflow`.
+    <div className="shrink-0 overflow-hidden rounded-token border border-line bg-panel">
       <header className="border-b border-line px-3.5 py-3">
         <h3 className="text-[14px] font-medium text-ink">
           {payload.count} {payload.criterionLabel}

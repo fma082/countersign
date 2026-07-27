@@ -3,13 +3,15 @@
  * 30 rows across 6 categories and 4 suppliers.
  *
  * Conflicts are planted on purpose so the agent can *discover* problems
- * instead of being told about them:
- *   - 6 products still on an expired sale price
- *   - 3 of those sell below cost (negative margin)
- *   - 11 products below their reorder point
- *   - 6 products hidden from the web store
- *   - 3 already discontinued (status is not uniform)
- *   - 1 active, non-expired sale as a control case (must NOT be swept up)
+ * instead of being told about them: expired sale prices, some of them selling
+ * below cost, stock under the reorder point, rows hidden from the web store,
+ * a status column that is not uniform, and one valid sale as a control case
+ * that must NOT be swept up.
+ *
+ * The rosters and the counts live in `PLANTED` / `SEED_COUNTS` at the foot of
+ * this file, derived from the catalog and asserted against it at import. They
+ * are deliberately NOT restated here: this header used to carry its own copy of
+ * the numbers, and that copy went stale.
  *
  * Reference date for the scenario: 2026-07-21
  */
@@ -92,28 +94,113 @@ export const marginPct = (p: Product): number =>
 
 export const belowReorder = (p: Product): boolean => p.stock < p.reorderPoint;
 
-// ── Planted conflicts, for reference when writing the guided flow ───────
-//
-// Expired sale still applied (6):
-//   NB-AU-1002, NB-LT-2001, NB-CB-3002, NB-PW-4002, NB-MT-5002, NB-ST-6003
-//
-// Selling below cost right now (3) — all of them because of an expired sale:
-//   NB-LT-2001  139.00 vs cost 142.00   →  -2.2%
-//   NB-CB-3002   19.90 vs cost  21.00   →  -5.5%
-//   NB-PW-4002   49.00 vs cost  52.00   →  -6.1%
-//
-// Active, valid sale — the control case that must survive any sweep (1):
-//   NB-LT-2004  ends 2026-08-31
-//
-// Below reorder point (13) — `belowReorder` is stock < reorderPoint and knows
-// nothing about status, so the two discontinued rows sitting at stock 0 match
-// too (NB-AU-1005, NB-MT-5005):
-//   NB-AU-1002, NB-AU-1004, NB-AU-1005, NB-LT-2003, NB-CB-3002, NB-CB-3004,
-//   NB-CB-3005, NB-PW-4002, NB-PW-4004, NB-MT-5002, NB-MT-5005, NB-ST-6002,
-//   NB-ST-6005
-//
-// Hidden from web store (6):
-//   NB-AU-1005, NB-LT-2005, NB-CB-3005, NB-PW-4005, NB-MT-5005, NB-ST-6004
-//
-// Already discontinued (3):
-//   NB-AU-1005, NB-CB-3005, NB-MT-5005
+// ── Planted conflicts, for reference when writing the guided flow ──────────
+
+/**
+ * One seeded conflict: the SKU roster you read when writing a guided step, next
+ * to the predicate the engine actually runs over the catalog.
+ */
+interface PlantedGroup {
+  /** How the group reads in prose. */
+  label: string;
+  /** The roster. Order is irrelevant — it is compared as a set. */
+  skus: readonly string[];
+  /** What the engine runs. The roster must be exactly this, or the build fails. */
+  match: (p: Product) => boolean;
+}
+
+/**
+ * The conflicts, as data instead of as a paragraph.
+ *
+ * No count is written down here, because a written count drifts: the
+ * below-reorder figure was typed as 11, went stale when the seed grew to 13,
+ * and was then corrected by hand TWICE — once in this block, and once, days
+ * later, in this file's own header, which had gone on saying 11 in the
+ * meantime. A number that has to be maintained in two places is a number that
+ * will be wrong in one of them.
+ *
+ * So the roster is the only thing authored, the count is derived from it
+ * (`SEED_COUNTS`), and `assertPlanted` re-runs every predicate against
+ * `PRODUCTS` at import. A roster that stops describing the catalog stops the
+ * build.
+ */
+const PLANTED: Record<PlantedKey, PlantedGroup> = {
+  expiredSale: {
+    label: "expired sale still applied",
+    skus: ["NB-AU-1002", "NB-LT-2001", "NB-CB-3002", "NB-PW-4002", "NB-MT-5002", "NB-ST-6003"],
+    match: (p) => p.salePrice !== null && saleExpired(p),
+  },
+  belowCost: {
+    // All three only because of an expired sale:
+    //   NB-LT-2001  139.00 vs cost 142.00  →  -2.2%
+    //   NB-CB-3002   19.90 vs cost  21.00  →  -5.5%
+    //   NB-PW-4002   49.00 vs cost  52.00  →  -6.1%
+    label: "selling below cost right now",
+    skus: ["NB-LT-2001", "NB-CB-3002", "NB-PW-4002"],
+    match: (p) => effectivePrice(p) < p.cost,
+  },
+  activeSale: {
+    // The control case that must survive any sweep. NB-LT-2004 ends 2026-08-31.
+    label: "on a valid, unexpired sale",
+    skus: ["NB-LT-2004"],
+    match: (p) => p.salePrice !== null && !saleExpired(p),
+  },
+  belowReorder: {
+    // `belowReorder` is stock < reorderPoint and knows nothing about status, so
+    // the two discontinued rows sitting at stock 0 match too (NB-AU-1005,
+    // NB-MT-5005). That is deliberate, not an oversight.
+    label: "below reorder point",
+    skus: [
+      "NB-AU-1002", "NB-AU-1004", "NB-AU-1005", "NB-LT-2003", "NB-CB-3002",
+      "NB-CB-3004", "NB-CB-3005", "NB-PW-4002", "NB-PW-4004", "NB-MT-5002",
+      "NB-MT-5005", "NB-ST-6002", "NB-ST-6005",
+    ],
+    match: belowReorder,
+  },
+  hidden: {
+    label: "hidden from the web store",
+    skus: ["NB-AU-1005", "NB-LT-2005", "NB-CB-3005", "NB-PW-4005", "NB-MT-5005", "NB-ST-6004"],
+    match: (p) => !p.webVisible,
+  },
+  discontinued: {
+    label: "already discontinued",
+    skus: ["NB-AU-1005", "NB-CB-3005", "NB-MT-5005"],
+    match: (p) => p.status === "discontinued",
+  },
+};
+
+type PlantedKey =
+  | "expiredSale"
+  | "belowCost"
+  | "activeSale"
+  | "belowReorder"
+  | "hidden"
+  | "discontinued";
+
+/** Every seeded count, derived. Read these; never write one down. */
+export const SEED_COUNTS = Object.fromEntries(
+  (Object.entries(PLANTED) as [PlantedKey, PlantedGroup][]).map(([k, g]) => [k, g.skus.length]),
+) as Record<PlantedKey, number>;
+
+/** Throws if any roster above has stopped describing the catalog below it. */
+function assertPlanted(): void {
+  const drifted = (Object.entries(PLANTED) as [PlantedKey, PlantedGroup][]).flatMap(([key, g]) => {
+    const actual = PRODUCTS.filter(g.match).map((p) => p.sku).sort();
+    const listed = [...g.skus].sort();
+    if (actual.join() === listed.join()) return [];
+    return [
+      `  ${key} (${g.label}): documented ${listed.length} [${listed.join(" ")}], ` +
+        `catalog has ${actual.length} [${actual.join(" ")}]`,
+    ];
+  });
+  if (drifted.length)
+    throw new Error(
+      `seed-products: the planted-conflict roster no longer describes PRODUCTS.\n${drifted.join("\n")}`,
+    );
+}
+
+// Runs at import, and every route reaches this module through `catalog`, so a
+// drifted roster fails `next build` and `next dev` the same way. `PRODUCTS` is a
+// literal, so this is a check over compile-time constants: if it passes the
+// build it cannot begin failing in production.
+assertPlanted();
