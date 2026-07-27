@@ -76,26 +76,50 @@ interface Resolved {
   phrase: string;
 }
 
-function resolveMetric(metric: Metric): Resolved {
+/**
+ * The one place a metric is put into words. `criterionLabel` is read from here,
+ * and so is the metric vocabulary in the system prompt — so the phrase the model
+ * is told a metric MEANS and the phrase it is handed back after running it are
+ * the same string by construction, not by two people remembering to match.
+ *
+ * They were not, once: the prompt's only mapping from "selling below cost" to
+ * `negative_margin` lived inside an unrelated formatting example, and editing
+ * that example silently sent the metric routing somewhere else.
+ */
+export const METRIC_PHRASES: Record<Metric, string> = {
+  // sale axis
+  on_sale: "products on an active, valid sale",
+  expired_sale: "products still on an expired sale price",
+  // status axis
+  active: "products with active status",
+  discontinued: "products that are discontinued",
+  // other axes
+  below_reorder: "products below their reorder point",
+  negative_margin: "products selling below cost",
+  all: "products in the catalog",
+};
+
+function metricRows(metric: Metric): Product[] {
   switch (metric) {
-    // sale axis
     case "on_sale":
-      return { rows: activeSales(), phrase: "products on an active, valid sale" };
+      return activeSales();
     case "expired_sale":
-      return { rows: expiredSales(), phrase: "products still on an expired sale price" };
-    // status axis
+      return expiredSales();
     case "active":
-      return { rows: activeProducts(), phrase: "products with active status" };
+      return activeProducts();
     case "discontinued":
-      return { rows: discontinuedProducts(), phrase: "products that are discontinued" };
-    // other axes
+      return discontinuedProducts();
     case "below_reorder":
-      return { rows: belowReorderProducts(), phrase: "products below their reorder point" };
+      return belowReorderProducts();
     case "negative_margin":
-      return { rows: negativeMargin(), phrase: "products selling below cost" };
+      return negativeMargin();
     case "all":
-      return { rows: allProducts(), phrase: "products in the catalog" };
+      return allProducts();
   }
+}
+
+function resolveMetric(metric: Metric): Resolved {
+  return { rows: metricRows(metric), phrase: METRIC_PHRASES[metric] };
 }
 
 function resolveSelector(where: string): Resolved | null {
@@ -165,12 +189,17 @@ export const TOOLS: ProviderTool[] = [
     function: {
       name: "filter_view",
       description:
-        "Filter the product table to a metric so the human can see the rows. Read-only. Can reveal the hidden Margin column.",
+        "Filter the product table to a metric so the human can see the rows. Read-only. Can reveal the hidden Margin column. You get the count and the criterion back, not the rows — the rows are displayed directly.",
       parameters: {
         type: "object",
         properties: {
           filter: { type: "string", enum: [...METRICS, "none"] },
           reveal_margin: { type: "boolean" },
+          userIntent: {
+            type: "string",
+            description:
+              "Optional. The user's own words for what they asked, verbatim. Used only as a subtitle above the results; it selects nothing.",
+          },
         },
         required: ["filter"],
       },
@@ -408,17 +437,42 @@ function governInspect(id: string, args: Record<string, unknown>): Governed {
   };
 }
 
+/**
+ * Filter the table to a metric. Split across the same two channels as
+ * `governQuery`, and for the same reason.
+ *
+ * This tool used to return `{ filtered, count, skus }`: a raw enum token, a
+ * number, and thirteen SKUs. The model had to turn `below_reorder` into English
+ * on its own, and with no wording to copy it reached for the nearest phrasing it
+ * had — the example in the system prompt — and answered "13 products are selling
+ * below cost" over a run of `below_reorder`. Same class of failure the payload
+ * split closed for `query_products`, still open here because the label was
+ * missing. So the label ships, the SKUs do not, and the rows go to the client.
+ */
 function governFilter(id: string, args: Record<string, unknown>): Governed {
   const filter = args.filter;
   const revealMargin = args.reveal_margin === true;
+  const userIntent = cleanIntent(args.userIntent);
+
   if (filter === "none") {
+    // Clearing the filter still resolves a group — everything — and the model
+    // still has to name it. No render payload: the point of this branch is
+    // removing a selection, not listing one. `rendered` stays true because the
+    // table below is what the human is now looking at.
+    const all = allProducts();
     return {
       kind: "safe",
-      event: mk(id, "filter_view", "safe", "ok", "Cleared the filter — showing all 30 products.", args, []),
-      effect: { filter: { skus: null }, ...(revealMargin ? { reveal: ["margin"], margins: marginsFor(allProducts()) } : {}) },
-      outcome: modelOnly({ filtered: "none", count: 30 }),
+      event: mk(id, "filter_view", "safe", "ok", `Cleared the filter — showing all ${all.length} products.`, args, []),
+      effect: { filter: { skus: null }, ...(revealMargin ? { reveal: ["margin"], margins: marginsFor(all) } : {}) },
+      outcome: modelOnly({
+        count: all.length,
+        criterion: "none",
+        criterionLabel: "products in the catalog, unfiltered",
+        rendered: true,
+      }),
     };
   }
+
   if (!isMetric(filter))
     return invalid(id, "filter_view", args, `Unknown filter "${String(filter)}".`);
   const { rows, phrase } = resolveMetric(filter);
@@ -427,7 +481,24 @@ function governFilter(id: string, args: Record<string, unknown>): Governed {
     kind: "safe",
     event: mk(id, "filter_view", "safe", "ok", `Filtered to ${rows.length} ${phrase}${revealMargin ? ", Margin revealed" : ""}.`, args, targetIds),
     effect: { filter: { skus: targetIds }, ...(revealMargin ? { reveal: ["margin"], margins: marginsFor(rows) } : {}) },
-    outcome: modelOnly({ filtered: filter, count: rows.length, skus: targetIds }),
+    outcome: {
+      // The criterion in words, built by the server from what it executed. No
+      // sku, no row — the same guarantee `query_products` makes.
+      modelPayload: {
+        count: rows.length,
+        criterion: filter,
+        criterionLabel: phrase,
+        rendered: true,
+      },
+      // Same shape of data as a query, so the same component reads it.
+      renderPayload: {
+        component: "product_list",
+        count: rows.length,
+        criterionLabel: phrase,
+        data: rows.map(toPublic),
+        ...(userIntent ? { userIntent } : {}),
+      },
+    },
   };
 }
 

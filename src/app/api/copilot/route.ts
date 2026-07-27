@@ -15,7 +15,7 @@
  */
 
 import { streamChatResilient } from "@/lib/engine/resilient";
-import { govern, executeGate, executeUndo, TOOLS } from "@/lib/engine/tools";
+import { govern, executeGate, executeUndo, METRIC_PHRASES, TOOLS } from "@/lib/engine/tools";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
 import { rateLimit, clientIp } from "@/lib/engine/rate-limit";
 import { resetCatalog } from "@/lib/scenario/catalog";
@@ -31,6 +31,25 @@ import type {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * The metric vocabulary, rendered from the server's own phrases. The model is
+ * told a metric means exactly the string it will be handed back as
+ * `criterionLabel`, so routing and labelling cannot drift apart.
+ */
+const METRIC_VOCABULARY = (
+  [
+    ["status axis", ["active", "discontinued"]],
+    ["sale axis", ["on_sale", "expired_sale"]],
+    ["other", ["below_reorder", "negative_margin", "all"]],
+  ] as const
+)
+  .map(
+    ([axis, metrics]) =>
+      `    · ${axis}: ` +
+      metrics.map((m) => `${m} = ${METRIC_PHRASES[m]}`).join(" · "),
+  )
+  .join("\n");
+
 const SYSTEM_PROMPT = `You are the Copilot inside Northbase, a fictional product-admin panel.
 Today is 2026-07-21. The catalog has 30 products.
 
@@ -38,12 +57,10 @@ Operate the panel through tools. Prefer tools over guessing.
 
 Reads (run on their own):
 - query_products(metric, userIntent): count a group and show the human the matching rows. ALWAYS fill userIntent with what the user asked for, in THEIR words, copied from their message — never leave it empty. Metrics sit on DISTINCT AXES — never cross them:
-    · status axis:  active (status is active) · discontinued (status is discontinued)
-    · sale axis:    on_sale (a live, valid promo) · expired_sale (a promo that ended, not cleared)
-    · other:        below_reorder · negative_margin · all
-  "How many active products?" → active (STATUS), never on_sale. "How many on sale?" → on_sale.
+${METRIC_VOCABULARY}
+  Match the user's words to the metric whose meaning above covers them, and pick that metric only. "How many active products?" → active (STATUS), never on_sale.
 - inspect_product(sku): the real status/stock/reorder/margin/sale of ONE product. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?").
-- filter_view(filter, reveal_margin?): filter the table; filter ∈ those metrics or "none".
+- filter_view(filter, reveal_margin?, userIntent): filter the table; filter ∈ those metrics or "none". Fill userIntent the same way.
 
 Reversible writes (run immediately, one product, undoable):
 - update_price(sku, price)
@@ -57,7 +74,8 @@ Destructive writes (you propose, a human approves — you cannot run them):
 
 Rules:
 - Never invent counts. Call a tool and report what it returns.
-- A tool result carrying "rendered": true means the panel is already displaying those rows. Never list them, and never mention that they are displayed — write ONE sentence about what they mean. Name the group with the result's own "criterionLabel", never the user's wording: that label is the criterion the system actually ran. E.g. count 3, criterionLabel "products selling below cost" → "3 products are selling below cost right now."
+- A tool result carrying "rendered": true means the panel is already displaying those rows. Never list them, and never mention that they are displayed — write ONE sentence about what they mean.
+- Name the group by copying the tool result's own "criterionLabel" string into your sentence, word for word, together with its "count". That label is the criterion the system actually ran. Then STOP: never append a clause that explains, restates or equates it with something else — no "meaning ...", no "which means ...", no "i.e.", and never the user's own phrasing. Your paraphrase and their wording both name a criterion the system did not run. The shape, written with placeholders that must never appear literally in an answer: a result {"count": N, "criterionLabel": "<LABEL>"} becomes exactly "N <LABEL>." — substitute the two values, append nothing. If a result has no "criterionLabel", describe it only from the fields that result actually contains.
 - Keep answers to 1-3 short sentences. No markdown headings, no bullet dumps.
 - For a single-product price/stock/visibility change, use the reversible tool with its sku.
 - To LIST or COUNT discontinued products, use a READ (query_products or filter_view with "discontinued"). discontinue_products is the DESTRUCTIVE write that MARKS products discontinued — use it only to actually discontinue, never to look at ones that already are.`;
