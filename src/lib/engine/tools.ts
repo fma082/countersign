@@ -311,6 +311,24 @@ function cleanIntent(raw: unknown): string | undefined {
  * criterion travels next to the count. The rows go to the client, which shows
  * them. `criterionLabel` is the server's own wording, the same one on the tool
  * card, so prose and card cannot drift apart.
+ *
+ * `userIntent` goes with the rows, NOT with the count, and the split is
+ * measured rather than assumed. llama3.2:3b, temperature 0, three runs each,
+ * asked "give me the list of products with less than 50 in stock" (which the
+ * model resolves to the `below_reorder` metric):
+ *
+ *   userIntent in modelPayload   → "There are 13 products that are below their
+ *                                   reorder point, meaning they have less than
+ *                                   50 units in stock."
+ *   userIntent in renderPayload  → "There are 13 products that are below their
+ *                                   reorder point."
+ *
+ * That trailing clause is false — `belowReorder` is `stock < reorderPoint` per
+ * product and has no 50 in it anywhere. Handed the user's phrasing back, the
+ * model restates it as the DEFINITION of the criterion. A system-prompt rule
+ * forbidding exactly that was tried first and the 3b model ignored it, which is
+ * the whole argument: the prompt asks, the payload decides. The field has no
+ * reader on the model channel anyway — the subtitle it feeds is the client's.
  */
 function governQuery(id: string, args: Record<string, unknown>): Governed {
   if (!isMetric(args.metric))
@@ -333,23 +351,18 @@ function governQuery(id: string, args: Record<string, unknown>): Governed {
         count: rows.length,
         criterion: args.metric,
         criterionLabel: phrase,
-        // NOTE: handing the user's phrasing back to the model measurably costs
-        // accuracy. llama3.2:3b, temperature 0, "less than 50 in stock":
-        //   with userIntent    → "13 products that are below their reorder
-        //                         point, meaning they have less than 50 units
-        //                         in stock."  ← false equivalence
-        //   without userIntent → "13 products that are below their reorder
-        //                         point."
-        // The subtitle it feeds is the CLIENT's, so this field has no reader on
-        // the model channel. Moving it to `renderPayload` closes the gap; it
-        // sits here because the model channel is where the spec put it.
-        ...(userIntent ? { userIntent } : {}),
         rendered: true,
       },
       // The full public product objects (cost stripped by `toPublic`), so the
       // field the metric filters on — `reorderPoint` — travels alongside
       // `stock` and the client can render a row without re-deriving anything.
-      renderPayload: { component: "product_list", data: rows.map(toPublic) },
+      // `userIntent` rides here too: it is the component's subtitle, and the
+      // client is its only reader.
+      renderPayload: {
+        component: "product_list",
+        data: rows.map(toPublic),
+        ...(userIntent ? { userIntent } : {}),
+      },
     },
   };
 }

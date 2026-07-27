@@ -142,6 +142,13 @@ export interface RenderPayload<T = unknown> {
   /** Which client component owns this data, e.g. "product_list". */
   component: string;
   data: T;
+  /**
+   * The user's own phrasing for what they asked, as the model reported it —
+   * the component's subtitle ("interpreted from: …"). It rides this channel and
+   * not the model's on purpose: fed back to the model it gets narrated as the
+   * DEFINITION of the criterion, which is false. See `governQuery`.
+   */
+  userIntent?: string;
 }
 
 export interface ToolOutcome<T = unknown> {
