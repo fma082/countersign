@@ -105,9 +105,12 @@ export const belowReorder = (p: Product): boolean => p.stock < p.reorderPoint;
 // Active, valid sale — the control case that must survive any sweep (1):
 //   NB-LT-2004  ends 2026-08-31
 //
-// Below reorder point (11):
-//   NB-AU-1002, NB-AU-1004, NB-LT-2003, NB-CB-3002, NB-CB-3004, NB-CB-3005,
-//   NB-PW-4002, NB-PW-4004, NB-MT-5002, NB-ST-6002, NB-ST-6005
+// Below reorder point (13) — `belowReorder` is stock < reorderPoint and knows
+// nothing about status, so the two discontinued rows sitting at stock 0 match
+// too (NB-AU-1005, NB-MT-5005):
+//   NB-AU-1002, NB-AU-1004, NB-AU-1005, NB-LT-2003, NB-CB-3002, NB-CB-3004,
+//   NB-CB-3005, NB-PW-4002, NB-PW-4004, NB-MT-5002, NB-MT-5005, NB-ST-6002,
+//   NB-ST-6005
 //
 // Hidden from web store (6):
 //   NB-AU-1005, NB-LT-2005, NB-CB-3005, NB-PW-4005, NB-MT-5005, NB-ST-6004
