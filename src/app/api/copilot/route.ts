@@ -19,7 +19,14 @@ import { govern, executeGate, executeUndo, TOOLS } from "@/lib/engine/tools";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
 import { rateLimit, clientIp } from "@/lib/engine/rate-limit";
 import { resetCatalog } from "@/lib/scenario/catalog";
-import type { ChatMessage, ErrorReason, StreamFrame, UndoSpec, ViewEffect } from "@/lib/engine/types";
+import type {
+  ChatMessage,
+  ErrorReason,
+  StreamFrame,
+  ToolOutcome,
+  UndoSpec,
+  ViewEffect,
+} from "@/lib/engine/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,7 +37,7 @@ Today is 2026-07-21. The catalog has 30 products.
 Operate the panel through tools. Prefer tools over guessing.
 
 Reads (run on their own):
-- query_products(metric): count a group. Metrics sit on DISTINCT AXES — never cross them:
+- query_products(metric, userIntent?): count a group and show the human the matching rows. Pass the user's own words as userIntent. Metrics sit on DISTINCT AXES — never cross them:
     · status axis:  active (status is active) · discontinued (status is discontinued)
     · sale axis:    on_sale (a live, valid promo) · expired_sale (a promo that ended, not cleared)
     · other:        below_reorder · negative_margin · all
@@ -50,6 +57,7 @@ Destructive writes (you propose, a human approves — you cannot run them):
 
 Rules:
 - Never invent counts. Call a tool and report what it returns.
+- A tool result carrying "rendered": true means the panel is already displaying those rows. Never list them, and never mention that they are displayed — write ONE sentence about what they mean. Name the group with the result's own "criterionLabel", never the user's wording: that label is the criterion the system actually ran. E.g. count 3, criterionLabel "products selling below cost" → "3 products are selling below cost right now." "userIntent" is only the user's own words echoed back for the panel's subtitle: never repeat it, and never claim it means the same thing as the criterion.
 - Keep answers to 1-3 short sentences. No markdown headings, no bullet dumps.
 - For a single-product price/stock/visibility change, use the reversible tool with its sku.
 - To LIST or COUNT discontinued products, use a READ (query_products or filter_view with "discontinued"). discontinue_products is the DESTRUCTIVE write that MARKS products discontinued — use it only to actually discontinue, never to look at ones that already are.`;
@@ -246,12 +254,20 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
 
       emit({ type: "tool", event: decision.event });
       anyToolRan = true;
-      if (decision.kind !== "invalid" && hasEffect(decision.effect)) {
-        emit({ type: "effect", effect: decision.effect });
+      if (decision.kind !== "invalid") {
+        if (hasEffect(decision.effect)) emit({ type: "effect", effect: decision.effect });
+        emitRender(decision.outcome, emit);
       }
+      // ONLY `modelPayload` crosses into the conversation. Whatever rows the
+      // tool resolved left on the render channel above and are not in scope
+      // here — the model cannot enumerate what it was never handed.
       // Tie each result back to the call that produced it — its own id, never
       // mixed. Groq (OpenAI-style) rejects a role:"tool" message without it.
-      messages.push({ role: "tool", content: decision.toolResult, tool_call_id: call.id });
+      messages.push({
+        role: "tool",
+        content: JSON.stringify(decision.outcome.modelPayload),
+        tool_call_id: call.id,
+      });
     }
   }
 
@@ -277,10 +293,16 @@ function runFallback(fallback: Fallback, emit: Emit): void {
   }
 
   emit({ type: "tool", event: decision.event });
-  if (decision.kind !== "invalid" && hasEffect(decision.effect)) {
-    emit({ type: "effect", effect: decision.effect });
+  if (decision.kind !== "invalid") {
+    if (hasEffect(decision.effect)) emit({ type: "effect", effect: decision.effect });
+    emitRender(decision.outcome, emit);
   }
   emit({ type: "done" });
+}
+
+/** Ship the client-only half of a tool outcome, when there is one. */
+function emitRender(outcome: ToolOutcome, emit: Emit): void {
+  if (outcome.renderPayload) emit({ type: "render", render: outcome.renderPayload });
 }
 
 /**
@@ -299,7 +321,8 @@ async function runGateDecision(body: Body, emit: Emit): Promise<void> {
   const result = executeGate("call_gate", stored.tool, stored.args, excluded);
   emit({ type: "tool", event: result.event });
   emit({ type: "effect", effect: result.effect });
-  emit({ type: "token", text: gateClosing(result.toolResult) });
+  emitRender(result.outcome, emit);
+  emit({ type: "token", text: gateClosing(result.outcome.modelPayload) });
   emit({ type: "done" });
 }
 
@@ -321,15 +344,12 @@ async function runUndo(body: Body, emit: Emit): Promise<void> {
   emit({ type: "done" });
 }
 
-function gateClosing(toolResult: string): string {
-  try {
-    const { approved, excluded } = JSON.parse(toolResult) as { approved: number; excluded: number };
-    if (approved === 0) return "Nothing ran — every target was excluded.";
-    const tail = excluded ? ` ${excluded} held back by you.` : "";
-    return `Done — applied to ${approved} product${approved === 1 ? "" : "s"}.${tail}`;
-  } catch {
-    return "Done.";
-  }
+function gateClosing(payload: unknown): string {
+  const { approved, excluded } = (payload ?? {}) as { approved?: number; excluded?: number };
+  if (typeof approved !== "number") return "Done.";
+  if (approved === 0) return "Nothing ran — every target was excluded.";
+  const tail = excluded ? ` ${excluded} held back by you.` : "";
+  return `Done — applied to ${approved} product${approved === 1 ? "" : "s"}.${tail}`;
 }
 
 function hasEffect(e: ViewEffect): boolean {

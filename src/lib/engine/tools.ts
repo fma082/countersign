@@ -34,6 +34,7 @@ import {
   REFERENCE_DATE,
   setField,
   setFieldBatch,
+  toPublic,
   type WriteField,
 } from "@/lib/scenario/catalog";
 import { effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
@@ -43,6 +44,7 @@ import type {
   ProviderTool,
   RowMutation,
   ToolEvent,
+  ToolOutcome,
   UndoSpec,
   ViewEffect,
 } from "./types";
@@ -128,11 +130,16 @@ export const TOOLS: ProviderTool[] = [
     function: {
       name: "query_products",
       description:
-        "Count and inspect products by a business metric. Read-only.",
+        "Count products by a business metric and show the matching rows to the human. Read-only. You get the count and the criterion back, not the rows — the rows are displayed directly.",
       parameters: {
         type: "object",
         properties: {
           metric: { type: "string", enum: [...METRICS] },
+          userIntent: {
+            type: "string",
+            description:
+              "Optional. The user's own words for what they asked, verbatim. Used only as a subtitle above the results; it selects nothing.",
+          },
         },
         required: ["metric"],
       },
@@ -245,11 +252,17 @@ export const TOOLS: ProviderTool[] = [
 ];
 
 // ── Governance results ─────────────────────────────────────────────────────
+// Every non-gate decision carries a `ToolOutcome`: what the model gets, and
+// (optionally) what only the client gets. `modelPayload` is an object here —
+// serialization belongs to the layer that writes the `role:"tool"` message.
 export type Governed =
-  | { kind: "safe"; event: ToolEvent; effect: ViewEffect; toolResult: string }
-  | { kind: "reversible"; event: ToolEvent; effect: ViewEffect; toolResult: string }
+  | { kind: "safe"; event: ToolEvent; effect: ViewEffect; outcome: ToolOutcome }
+  | { kind: "reversible"; event: ToolEvent; effect: ViewEffect; outcome: ToolOutcome }
   | { kind: "gate"; event: ToolEvent; gate: GatePreview }
-  | { kind: "invalid"; event: ToolEvent; toolResult: string };
+  | { kind: "invalid"; event: ToolEvent; outcome: ToolOutcome };
+
+/** The common case: one channel, nothing withheld and nothing rendered. */
+const modelOnly = (modelPayload: unknown): ToolOutcome => ({ modelPayload });
 
 let gateSeq = 0;
 let actionSeq = 0;
@@ -277,6 +290,28 @@ export function govern(id: string, name: string, args: Record<string, unknown>):
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────
+/**
+ * The user's own phrasing, as the model reported it. Model data, therefore
+ * untrusted — but it executes nothing: it resolves no target, picks no metric,
+ * and only ever feeds a subtitle. So we take it liberally and drop it when it is
+ * empty or shaped wrong, rather than refusing the read over it.
+ */
+function cleanIntent(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const text = raw.replace(/\s+/g, " ").trim().slice(0, 120);
+  return text ? text : undefined;
+}
+
+/**
+ * A read, split across two channels.
+ *
+ * The model gets the shape of the answer — how many, and WHICH criterion the
+ * server actually ran — and not one row. It cannot enumerate SKUs it was never
+ * given, and it cannot relabel the result with the user's phrase when the
+ * criterion travels next to the count. The rows go to the client, which shows
+ * them. `criterionLabel` is the server's own wording, the same one on the tool
+ * card, so prose and card cannot drift apart.
+ */
 function governQuery(id: string, args: Record<string, unknown>): Governed {
   if (!isMetric(args.metric))
     return invalid(id, "query_products", args, `Unknown metric "${String(args.metric)}".`);
@@ -286,11 +321,36 @@ function governQuery(id: string, args: Record<string, unknown>): Governed {
   const effect: ViewEffect = revealMargin
     ? { reveal: ["margin"], margins: marginsFor(rows), filter: { skus: targetIds } }
     : {};
+  const userIntent = cleanIntent(args.userIntent);
   return {
     kind: "safe",
     event: mk(id, "query_products", "safe", "ok", `${rows.length} ${phrase}.`, args, targetIds),
     effect,
-    toolResult: JSON.stringify({ count: rows.length, metric: args.metric, skus: targetIds }),
+    outcome: {
+      // No sku, no name, no row. That absence is the guarantee — not a rule in
+      // the system prompt asking the model to please not enumerate.
+      modelPayload: {
+        count: rows.length,
+        criterion: args.metric,
+        criterionLabel: phrase,
+        // NOTE: handing the user's phrasing back to the model measurably costs
+        // accuracy. llama3.2:3b, temperature 0, "less than 50 in stock":
+        //   with userIntent    → "13 products that are below their reorder
+        //                         point, meaning they have less than 50 units
+        //                         in stock."  ← false equivalence
+        //   without userIntent → "13 products that are below their reorder
+        //                         point."
+        // The subtitle it feeds is the CLIENT's, so this field has no reader on
+        // the model channel. Moving it to `renderPayload` closes the gap; it
+        // sits here because the model channel is where the spec put it.
+        ...(userIntent ? { userIntent } : {}),
+        rendered: true,
+      },
+      // The full public product objects (cost stripped by `toPublic`), so the
+      // field the metric filters on — `reorderPoint` — travels alongside
+      // `stock` and the client can render a row without re-deriving anything.
+      renderPayload: { component: "product_list", data: rows.map(toPublic) },
+    },
   };
 }
 
@@ -317,7 +377,7 @@ function governInspect(id: string, args: Record<string, unknown>): Governed {
     kind: "safe",
     event: mk(id, "inspect_product", "safe", "ok", summary, args, [p.sku]),
     effect: {},
-    toolResult: JSON.stringify({
+    outcome: modelOnly({
       sku: p.sku,
       name: p.name,
       status: p.status,
@@ -341,7 +401,7 @@ function governFilter(id: string, args: Record<string, unknown>): Governed {
       kind: "safe",
       event: mk(id, "filter_view", "safe", "ok", "Cleared the filter — showing all 30 products.", args, []),
       effect: { filter: { skus: null }, ...(revealMargin ? { reveal: ["margin"], margins: marginsFor(allProducts()) } : {}) },
-      toolResult: JSON.stringify({ filtered: "none", count: 30 }),
+      outcome: modelOnly({ filtered: "none", count: 30 }),
     };
   }
   if (!isMetric(filter))
@@ -352,7 +412,7 @@ function governFilter(id: string, args: Record<string, unknown>): Governed {
     kind: "safe",
     event: mk(id, "filter_view", "safe", "ok", `Filtered to ${rows.length} ${phrase}${revealMargin ? ", Margin revealed" : ""}.`, args, targetIds),
     effect: { filter: { skus: targetIds }, ...(revealMargin ? { reveal: ["margin"], margins: marginsFor(rows) } : {}) },
-    toolResult: JSON.stringify({ filtered: filter, count: rows.length, skus: targetIds }),
+    outcome: modelOnly({ filtered: filter, count: rows.length, skus: targetIds }),
   };
 }
 
@@ -413,7 +473,7 @@ function governFieldWrite(
         undo,
       },
       effect: { mutations: [fieldMutation(p.sku, field, value)], margins: marginPatch([p.sku]) },
-      toolResult: JSON.stringify({ ok: true, sku: p.sku, field, from, to: value }),
+      outcome: modelOnly({ ok: true, sku: p.sku, field, from, to: value }),
     };
   }
 
@@ -539,7 +599,7 @@ export function executeGate(
   tool: string,
   args: Record<string, unknown>,
   excludedIds: string[],
-): { event: ToolEvent; effect: ViewEffect; toolResult: string } {
+): { event: ToolEvent; effect: ViewEffect; outcome: ToolOutcome } {
   const plan =
     tool === "clear_expired_sales"
       ? planClear()
@@ -562,7 +622,7 @@ export function executeGate(
       excluded,
     },
     effect: { mutations, filter: { skus: null }, margins: marginPatch(allowed) },
-    toolResult: JSON.stringify({ approved: allowed.length, excluded: excluded.length, skus: allowed }),
+    outcome: modelOnly({ approved: allowed.length, excluded: excluded.length, skus: allowed }),
   };
 }
 
@@ -580,11 +640,11 @@ export function executeUndo(
   spec: UndoSpec,
   force: boolean,
 ):
-  | { kind: "undone"; event: ToolEvent; effect: ViewEffect; toolResult: string }
+  | { kind: "undone"; event: ToolEvent; effect: ViewEffect; outcome: ToolOutcome }
   | { kind: "stale"; field: string; expected: number | boolean; actual: number | boolean } {
   const current = getField(spec.sku, spec.field);
   if (current === undefined)
-    return { kind: "undone", event: mk(callId, spec.tool, "safe", "undone", "Nothing to undo — the product is gone.", {}, []), effect: {}, toolResult: "{}" };
+    return { kind: "undone", event: mk(callId, spec.tool, "safe", "undone", "Nothing to undo — the product is gone.", {}, []), effect: {}, outcome: modelOnly({}) };
 
   // Stale undo: the value drifted since the original write. Don't restore
   // blindly — surface the drift and let the human confirm.
@@ -598,7 +658,7 @@ export function executeUndo(
     kind: "undone",
     event: mk(callId, spec.tool, "safe", "undone", summary, {}, [spec.sku]),
     effect: { mutations: [fieldMutation(spec.sku, spec.field, spec.from)], margins: marginPatch([spec.sku]) },
-    toolResult: JSON.stringify({ undone: true, sku: spec.sku, field: spec.field, restoredTo: spec.from }),
+    outcome: modelOnly({ undone: true, sku: spec.sku, field: spec.field, restoredTo: spec.from }),
   };
 }
 
@@ -669,6 +729,6 @@ function invalid(id: string, name: string, args: Record<string, unknown>, reason
   return {
     kind: "invalid",
     event: mk(id, name, "invalid", "invalid", reason, args, []),
-    toolResult: JSON.stringify({ error: reason }),
+    outcome: modelOnly({ error: reason }),
   };
 }

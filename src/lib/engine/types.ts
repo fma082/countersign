@@ -125,6 +125,30 @@ export interface ToolEvent {
   excluded?: string[];
 }
 
+/**
+ * What a tool hands back, split into two channels that never mix.
+ *
+ *   modelPayload  — serialized into the `role:"tool"` message. The model sees
+ *                   ONLY this.
+ *   renderPayload — streamed to the client. The model never sees it.
+ *
+ * Same principle as `toPublic` dropping `cost`: a consumer cannot misuse what it
+ * never receives. A model handed 13 product rows enumerates them in prose and
+ * mislabels the criterion; handed a count and the criterion the server actually
+ * ran, it can only write the preamble. The rows still reach the human — they
+ * just travel on the channel that renders them.
+ */
+export interface RenderPayload<T = unknown> {
+  /** Which client component owns this data, e.g. "product_list". */
+  component: string;
+  data: T;
+}
+
+export interface ToolOutcome<T = unknown> {
+  modelPayload: unknown;
+  renderPayload?: RenderPayload<T>;
+}
+
 /** A row patch the client applies to the table. Only the changed fields appear. */
 export interface RowMutation {
   sku: string;
@@ -172,6 +196,12 @@ export type StreamFrame =
   | { type: "token"; text: string }
   | { type: "tool"; event: ToolEvent }
   | { type: "effect"; effect: ViewEffect }
+  /**
+   * Rows a tool resolved, on their way to the client and NOWHERE else. This is
+   * the second half of `ToolOutcome`: it carries what the model deliberately
+   * did not receive, so the data is shown rather than narrated.
+   */
+  | { type: "render"; render: RenderPayload }
   | { type: "gate"; gate: GatePreview }
   | { type: "staleUndo"; stale: StaleUndo }
   /**

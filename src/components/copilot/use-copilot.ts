@@ -9,6 +9,7 @@ import {
 import type {
   ErrorReason,
   GatePreview,
+  RenderPayload,
   StaleUndo,
   StreamFrame,
   ToolEvent,
@@ -43,6 +44,17 @@ export type LogItem =
   // around this item is the system's, not a narration.
   | { id: string; kind: "paused"; text: string };
 
+/**
+ * Rows a tool resolved and handed to the client instead of to the model, in
+ * arrival order. Nothing renders them yet — `product_list` does not exist. The
+ * channel lands first, and on its own it is verifiable: the data is here, and
+ * the model's context provably does not have it.
+ */
+export interface RenderItem {
+  id: string;
+  render: RenderPayload;
+}
+
 export interface CopilotCallbacks {
   onEffect(effect: ViewEffect): void;
   onGateOpen(targetIds: string[]): void;
@@ -62,6 +74,7 @@ export function useCopilot(callbacks: CopilotCallbacks) {
   const [log, setLog] = useState<LogItem[]>([]);
   const [gate, setGate] = useState<GatePreview | null>(null);
   const [stale, setStale] = useState<StaleUndo | null>(null);
+  const [renders, setRenders] = useState<RenderItem[]>([]);
   // Why the last turn failed — picks the fallback surface. Only read in `error`.
   const [errorReason, setErrorReason] = useState<ErrorReason>("generic");
 
@@ -180,6 +193,12 @@ export function useCopilot(callbacks: CopilotCallbacks) {
               { id: frame.gate.id, kind: "gate", gate: frame.gate, resolved: "pending" },
             ]);
             cbRef.current.onGateOpen(frame.gate.targetIds);
+            break;
+          }
+          case "render": {
+            // The rows the model was deliberately not given. Stored, not shown —
+            // this commit only opens the channel.
+            setRenders((prev) => [...prev, { id: nextId(), render: frame.render }]);
             break;
           }
           case "staleUndo": {
@@ -305,6 +324,7 @@ export function useCopilot(callbacks: CopilotCallbacks) {
     setLog([]);
     setGate(null);
     setStale(null);
+    setRenders([]);
     historyRef.current = [];
     activeUndoRef.current = null;
     pendingUndoItemRef.current = null;
@@ -374,6 +394,7 @@ export function useCopilot(callbacks: CopilotCallbacks) {
     log,
     gate,
     stale,
+    renders,
     errorReason,
     setDraft,
     submit,
