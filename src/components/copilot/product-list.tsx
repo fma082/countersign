@@ -17,6 +17,11 @@ import type { PublicProduct } from "@/lib/scenario/catalog";
  * The header states the criterion the SERVER executed, never the user's
  * phrasing. `userIntent` appears under it as an attribution when it is present,
  * and its absence degrades nothing — it selects no rows and computes no number.
+ *
+ * The row is TWO lines by design. This component lives inside the copilot
+ * panel, so ~380px is the primary width, not the degraded one; on one line the
+ * name was squeezed to nothing by the badges and rendered without even an
+ * ellipsis — a row taking up space to promise a datum it never delivered.
  */
 
 /** How much of the reorder point is still on the shelf. */
@@ -82,15 +87,12 @@ function ProductRow({ product: p }: { product: PublicProduct }) {
   const discontinued = p.status === "discontinued";
 
   return (
-    <li className="flex items-center gap-2.5 border-t border-line px-3.5 py-2 transition-colors first:border-t-0 hover:bg-sub">
-      <span className="w-[68px] flex-none font-mono text-[10.5px] text-ink-3">{p.sku}</span>
-
-      {/* Name + badges share the one elastic zone. The badges annotate the row's
-          identity, so they sit with the name and the name is what gives way —
-          that keeps the numeric columns on the right in a hard, scannable
-          column instead of shifting per row. */}
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className="truncate text-[12.5px] text-ink">{p.name}</span>
+    <li className="border-t border-line px-3.5 py-2.5 transition-colors first:border-t-0 hover:bg-sub">
+      {/* Line 1 — identity. Name + badges share this line because the badges
+          qualify the PRODUCT, not the number. The name is the only thing that
+          gives way, and it gives way to an ellipsis, never to zero. */}
+      <div className="flex items-center gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">{p.name}</span>
         {outOfStock && (
           <span className="flex-none whitespace-nowrap rounded-full bg-action px-1.5 py-0.5 text-[10px] leading-tight text-on-action">
             out of stock
@@ -101,21 +103,28 @@ function ProductRow({ product: p }: { product: PublicProduct }) {
             discontinued
           </span>
         )}
-      </span>
+      </div>
 
-      <span className="flex flex-none items-center gap-2">
+      {/* Line 2 — the measurement, and it is a fixed structure. The SKU absorbs
+          the slack on the left so the bar and the numbers stay in a hard column
+          that aligns across every row: the whole point of the list is comparing
+          those thirteen deficits down the page, and a column that shifts per
+          row cannot be compared. */}
+      <div className="mt-1 flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-3">{p.sku}</span>
+
         {/* The relative deficit, made visual. Neutral on purpose. */}
         <span
-          className="h-1 w-14 overflow-hidden rounded-full bg-sub"
+          className="h-1 w-14 flex-none overflow-hidden rounded-full bg-sub"
           role="img"
           aria-label={`${p.stock} of ${p.reorderPoint} reorder point`}
         >
           <span className="block h-full rounded-full bg-ink-3" style={{ width: `${bar * 100}%` }} />
         </span>
-        <span className="w-[56px] text-right font-mono text-[11.5px] text-ink-2">
+        <span className="w-[56px] flex-none text-right font-mono text-[11.5px] text-ink-2">
           <span className="text-ink">{p.stock}</span> / {p.reorderPoint}
         </span>
-      </span>
+      </div>
     </li>
   );
 }
