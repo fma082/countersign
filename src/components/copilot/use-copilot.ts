@@ -61,6 +61,39 @@ export interface CopilotCallbacks {
   onGateClose(): void;
 }
 
+/**
+ * A recorded turn: the exact `StreamFrame`s the governance server emitted, with
+ * the pause before each. Keyed by the request body so a replayed session can
+ * answer the follow-up calls (`approve`, `undo`) the same way the server would.
+ *
+ * This is the ONLY seam between the live panel and a scripted one. The frames
+ * are the server's own output, recorded — never re-derived on the client — so a
+ * replay still honours "the server resolves, the client reflects".
+ */
+export type ReplayStep = { frame: StreamFrame; delay?: number };
+export type ReplayDriver = (body: Record<string, unknown>) => ReplayStep[];
+
+export interface CopilotOptions {
+  /** When set, the panel replays scripted frames instead of calling the engine. */
+  replay?: ReplayDriver;
+}
+
+/** setTimeout as a promise that rejects (AbortError) the instant it's cancelled. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new DOMException("aborted", "AbortError"));
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        reject(new DOMException("aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+}
+
 interface Wire {
   role: "user" | "assistant";
   content: string;
@@ -69,7 +102,7 @@ interface Wire {
 let uid = 0;
 const nextId = () => `it_${++uid}`;
 
-export function useCopilot(callbacks: CopilotCallbacks) {
+export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions = {}) {
   const [state, dispatch] = useReducer(transition, initialState);
   const [log, setLog] = useState<LogItem[]>([]);
   const [gate, setGate] = useState<GatePreview | null>(null);
@@ -84,6 +117,8 @@ export function useCopilot(callbacks: CopilotCallbacks) {
   draftRef.current = state.draft;
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
+  const replayRef = useRef(options.replay);
+  replayRef.current = options.replay;
 
   // The single active undo (there is at most one) and the item being undone.
   const activeUndoRef = useRef<{ itemId: string; spec: UndoSpec } | null>(null);
@@ -228,6 +263,18 @@ export function useCopilot(callbacks: CopilotCallbacks) {
       };
 
       try {
+        // Scripted panel: replay the recorded frames for this request, with
+        // their pauses, through the exact same `handle`. No network, same truth.
+        if (replayRef.current) {
+          for (const step of replayRef.current(bodyExtra)) {
+            if (controller.signal.aborted) break;
+            if (step.delay) await sleep(step.delay, controller.signal);
+            if (controller.signal.aborted) break;
+            handle(step.frame);
+          }
+          return;
+        }
+
         const res = await fetch("/api/copilot", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
