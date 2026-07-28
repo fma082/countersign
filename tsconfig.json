@@ -15,6 +15,9 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // Test files run on `node --test` directly, and Node resolves a relative
+    // ESM specifier only with its real extension. Safe under `noEmit`.
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "incremental": true,
     "verbatimModuleSyntax": true,

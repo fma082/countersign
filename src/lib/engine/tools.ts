@@ -38,6 +38,7 @@ import {
   type WriteField,
 } from "@/lib/scenario/catalog";
 import { effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
+import { subtitleIntent } from "./intent-subtitle";
 import type {
   GateItem,
   GatePreview,
@@ -341,7 +342,8 @@ function cleanIntent(raw: unknown): string | undefined {
  * them. `criterionLabel` is the server's own wording, the same one on the tool
  * card, so prose and card cannot drift apart.
  *
- * `userIntent` goes with the rows, NOT with the count, and the split is
+ * `userIntent` goes with the rows, NOT with the count — and only when it says
+ * something `criterionLabel` does not (see `subtitleIntent`). The split is
  * measured rather than assumed. llama3.2:3b, temperature 0, three runs each,
  * asked "give me the list of products with less than 50 in stock" (which the
  * model resolves to the `below_reorder` metric):
@@ -368,7 +370,9 @@ function governQuery(id: string, args: Record<string, unknown>): Governed {
   const effect: ViewEffect = revealMargin
     ? { reveal: ["margin"], margins: marginsFor(rows), filter: { skus: targetIds } }
     : {};
-  const userIntent = cleanIntent(args.userIntent);
+  // Kept only if it differs from what we ran. A subtitle that repeats the
+  // header teaches the human to stop reading the subtitle.
+  const userIntent = subtitleIntent(cleanIntent(args.userIntent), phrase);
   return {
     kind: "safe",
     event: mk(id, "query_products", "safe", "ok", `${rows.length} ${phrase}.`, args, targetIds),
@@ -452,7 +456,6 @@ function governInspect(id: string, args: Record<string, unknown>): Governed {
 function governFilter(id: string, args: Record<string, unknown>): Governed {
   const filter = args.filter;
   const revealMargin = args.reveal_margin === true;
-  const userIntent = cleanIntent(args.userIntent);
 
   if (filter === "none") {
     // Clearing the filter still resolves a group — everything — and the model
@@ -477,6 +480,9 @@ function governFilter(id: string, args: Record<string, unknown>): Governed {
     return invalid(id, "filter_view", args, `Unknown filter "${String(filter)}".`);
   const { rows, phrase } = resolveMetric(filter);
   const targetIds = rows.map((p) => p.sku);
+  // Same gate as `governQuery`: only a phrasing that differs from the executed
+  // criterion earns the subtitle.
+  const userIntent = subtitleIntent(cleanIntent(args.userIntent), phrase);
   return {
     kind: "safe",
     event: mk(id, "filter_view", "safe", "ok", `Filtered to ${rows.length} ${phrase}${revealMargin ? ", Margin revealed" : ""}.`, args, targetIds),
