@@ -22,6 +22,7 @@ import { resetCatalog } from "@/lib/scenario/catalog";
 import type {
   ChatMessage,
   ErrorReason,
+  RenderPayload,
   StreamFrame,
   ToolOutcome,
   UndoSpec,
@@ -209,6 +210,7 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
   if (history.length <= 1) resetCatalog();
 
   const messages: ChatMessage[] = [{ role: "system", content: SYSTEM_PROMPT }, ...history];
+  const render = renderSlot(emit);
   let anyToolRan = false;
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -233,9 +235,10 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
     if (streamError) {
       if (anyToolRan) {
         emit({ type: "paused", text: PAUSED_AFTER_TOOL });
+        render.flush();
         emit({ type: "done" });
       } else if (fallback) {
-        runFallback(fallback, emit);
+        runFallback(fallback, emit, render);
       } else {
         emit({ type: "error", message: streamError.message, reason: streamError.reason });
       }
@@ -248,6 +251,7 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
     }
     if (pending.length === 0) {
       if (holding && text.trim()) emit({ type: "token", text });
+      render.flush();
       emit({ type: "done" });
       return;
     }
@@ -263,8 +267,11 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
 
       if (decision.kind === "gate") {
         // Destructive op waits FIRST. Remember what we offered so approval
-        // re-resolves server-side; emit the gate and stop — no `done`.
+        // re-resolves server-side; emit the gate and stop — no `done`. A gate is
+        // a close, so the turn's render lands here: whatever a read resolved
+        // before the proposal still has to reach the human, above the gate card.
         putGate({ id: decision.gate.id, tool: call.name, args: call.args });
+        render.flush();
         emit({ type: "tool", event: decision.event });
         emit({ type: "gate", gate: decision.gate });
         return;
@@ -274,7 +281,7 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
       anyToolRan = true;
       if (decision.kind !== "invalid") {
         if (hasEffect(decision.effect)) emit({ type: "effect", effect: decision.effect });
-        emitRender(decision.outcome, emit);
+        render.hold(decision.outcome);
       }
       // ONLY `modelPayload` crosses into the conversation. Whatever rows the
       // tool resolved left on the render channel above and are not in scope
@@ -289,6 +296,7 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
     }
   }
 
+  render.flush();
   emit({ type: "done" });
 }
 
@@ -299,12 +307,13 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
  * targetIds are the real, server-resolved article. The only thing missing is the
  * model's spoken narration, and the paused note says so.
  */
-function runFallback(fallback: Fallback, emit: Emit): void {
+function runFallback(fallback: Fallback, emit: Emit, render: RenderSlot): void {
   const decision = govern("call_fallback", fallback.tool, fallback.args);
   emit({ type: "paused", text: PAUSED_FALLBACK });
 
   if (decision.kind === "gate") {
     putGate({ id: decision.gate.id, tool: fallback.tool, args: fallback.args });
+    render.flush();
     emit({ type: "tool", event: decision.event });
     emit({ type: "gate", gate: decision.gate });
     return;
@@ -313,14 +322,50 @@ function runFallback(fallback: Fallback, emit: Emit): void {
   emit({ type: "tool", event: decision.event });
   if (decision.kind !== "invalid") {
     if (hasEffect(decision.effect)) emit({ type: "effect", effect: decision.effect });
-    emitRender(decision.outcome, emit);
+    render.hold(decision.outcome);
   }
+  render.flush();
   emit({ type: "done" });
 }
 
-/** Ship the client-only half of a tool outcome, when there is one. */
-function emitRender(outcome: ToolOutcome, emit: Emit): void {
-  if (outcome.renderPayload) emit({ type: "render", render: outcome.renderPayload });
+interface RenderSlot {
+  /** Take a tool's client-only half, replacing whatever was held before it. */
+  hold(outcome: ToolOutcome): void;
+  /** Ship the held payload, if any. Idempotent — a second call emits nothing. */
+  flush(): void;
+}
+
+/**
+ * The turn's ONE render slot. A turn emits at most one `render` frame, and the
+ * LAST `renderPayload` produced wins: tools run in order, so the last one is the
+ * turn's final resolved state.
+ *
+ * This is a constraint, not an optimisation. Two renders in one turn make the
+ * panel contradict ITSELF, and make one of the two disagree with the table:
+ * ask about margins and then to filter to expired sales, and `query_products`
+ * (3 selling below cost) and `filter_view` (6 on expired sale) each shipped a
+ * product_list. The panel stacked both, while the table header said "6 of 30" —
+ * so the top list was rows the system no longer stands behind, presented with
+ * the same authority as the ones it does. A human reading the wrong one reads it
+ * as current. One list per turn is the only version the server can vouch for.
+ *
+ * `modelPayload` is untouched by this: every tool still reports its own result
+ * to the model, and every tool still emits its own `tool` event, so both cards
+ * stay visible with their summaries. What collapses is the render — never the
+ * record of what ran.
+ */
+function renderSlot(emit: Emit): RenderSlot {
+  let held: RenderPayload | undefined;
+  return {
+    hold(outcome) {
+      if (outcome.renderPayload) held = outcome.renderPayload;
+    },
+    flush() {
+      if (!held) return;
+      emit({ type: "render", render: held });
+      held = undefined;
+    },
+  };
 }
 
 /**
@@ -339,7 +384,10 @@ async function runGateDecision(body: Body, emit: Emit): Promise<void> {
   const result = executeGate("call_gate", stored.tool, stored.args, excluded);
   emit({ type: "tool", event: result.event });
   emit({ type: "effect", effect: result.effect });
-  emitRender(result.outcome, emit);
+  // One gate, one outcome — the single-render rule is satisfied by construction.
+  if (result.outcome.renderPayload) {
+    emit({ type: "render", render: result.outcome.renderPayload });
+  }
   emit({ type: "token", text: gateClosing(result.outcome.modelPayload) });
   emit({ type: "done" });
 }
