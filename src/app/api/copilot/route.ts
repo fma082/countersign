@@ -36,12 +36,18 @@ export const dynamic = "force-dynamic";
  * The metric vocabulary, rendered from the server's own phrases. The model is
  * told a metric means exactly the string it will be handed back as
  * `criterionLabel`, so routing and labelling cannot drift apart.
+ *
+ * `stock_below` prints with its `{n}` placeholder intact — the parameter is
+ * visible in the meaning, so "less than 50 in stock" has somewhere to land that
+ * isn't `below_reorder`. The substituted label is built server-side, after the
+ * call, from the number the model passed.
  */
 const METRIC_VOCABULARY = (
   [
     ["status axis", ["active", "discontinued"]],
     ["sale axis", ["on_sale", "expired_sale"]],
-    ["other", ["below_reorder", "negative_margin", "all"]],
+    ["stock axis", ["below_reorder", "stock_below"]],
+    ["other", ["negative_margin", "all"]],
   ] as const
 )
   .map(
@@ -60,6 +66,7 @@ Reads (run on their own):
 - query_products(metric, userIntent): count a group and show the human the matching rows. ALWAYS fill userIntent with what the user asked for, in THEIR words, copied from their message — never leave it empty. Metrics sit on DISTINCT AXES — never cross them:
 ${METRIC_VOCABULARY}
   Match the user's words to the metric whose meaning above covers them, and pick that metric only. "How many active products?" → active (STATUS), never on_sale.
+  THE STOCK AXIS HAS TWO METRICS AND THEY ARE NOT INTERCHANGEABLE. A question naming a NUMBER of units is stock_below, and you must pass that number as threshold: "less than 50 in stock", "under 50 units", "stock below 50", "menos de 50 en stock", "con menos de 50 unidades" → stock_below with threshold: 50. Only a question with NO number — "running low", "which need reordering", "below the reorder point", "hay que reponer" — is below_reorder. Never answer a numbered question with below_reorder: it compares each product to its own reorder point, so it does not contain the user's number at all.
 - inspect_product(sku): the real status/stock/reorder/margin/sale of ONE product. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?").
 - filter_view(filter, reveal_margin?, userIntent): filter the table; filter ∈ those metrics or "none". Fill userIntent the same way.
 
@@ -431,7 +438,7 @@ const KNOWN_TOOLS = [
   "filter_view",
   "query_products",
 ] as const;
-const KNOWN_METRICS = ["on_sale", "expired_sale", "active", "discontinued", "below_reorder", "negative_margin", "all"] as const;
+const KNOWN_METRICS = ["on_sale", "expired_sale", "active", "discontinued", "below_reorder", "stock_below", "negative_margin", "all"] as const;
 
 /** Recover a tool call the model wrote as JSON text instead of structure. */
 function salvageToolCall(text: string): { name: string; args: Record<string, unknown> } | null {
@@ -454,6 +461,13 @@ function salvageToolCall(text: string): { name: string; args: Record<string, unk
     const metric = KNOWN_METRICS.find((m) => t.includes(m));
     if (metric) args[name === "filter_view" || name === "discontinue_products" ? "filter" : "metric"] = metric;
     if (/reveal|margin/i.test(t)) args.reveal_margin = true;
+    // A threshold metric is nothing without its number. Recover it from the same
+    // text rather than let the read resolve to a criterion with a hole in it —
+    // and if there is no number, the read is refused as invalid, not defaulted.
+    if (metric === "stock_below") {
+      const n = t.match(/\d+(?:\.\d+)?/);
+      if (n) args.threshold = Number(n[0]);
+    }
   }
   return { name, args };
 }

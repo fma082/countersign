@@ -34,6 +34,7 @@ import {
   REFERENCE_DATE,
   setField,
   setFieldBatch,
+  stockBelowProducts as stockBelow,
   toPublic,
   type WriteField,
 } from "@/lib/scenario/catalog";
@@ -53,7 +54,10 @@ import type {
 // ── Selector vocabulary ─────────────────────────────────────────────────────
 // Read metrics live on distinct AXES. Keeping the names axis-explicit stops a
 // small model from crossing them (e.g. "active products" is a STATUS, not a sale).
-const METRICS = [
+//
+// BARE metrics name a group on their own: the string IS the whole criterion.
+// That is what lets them double as write selectors.
+const BARE_METRICS = [
   // sale axis — is there a promo, and is it still valid?
   "on_sale", // a live, valid promo right now
   "expired_sale", // a promo whose end date has passed, not yet cleared
@@ -65,12 +69,33 @@ const METRICS = [
   "negative_margin",
   "all",
 ] as const;
+
+/**
+ * Metrics that name a group only once a NUMBER is supplied. They extend the
+ * read vocabulary and stop there — deliberately.
+ *
+ * `stock_below` is not in `SELECTORS`, so it never reaches `set_web_visible`'s
+ * `where` or `discontinue_products`'s `filter`. Those resolve through
+ * `resolveSelector(where: string)`, a bare string with nowhere to put a
+ * threshold: listing `stock_below` there would offer a DESTRUCTIVE tool a
+ * selector whose target set is undefined until an argument it cannot carry
+ * arrives. A read can refuse a missing threshold and cost the human a
+ * re-ask; a discontinue that resolves "stock below undefined" cannot.
+ */
+const THRESHOLD_METRICS = ["stock_below"] as const;
+
+/** The full read vocabulary: what `query_products` and `filter_view` accept. */
+const METRICS = [...BARE_METRICS, ...THRESHOLD_METRICS] as const;
 type Metric = (typeof METRICS)[number];
+type ThresholdMetric = (typeof THRESHOLD_METRICS)[number];
 const isMetric = (v: unknown): v is Metric =>
   typeof v === "string" && (METRICS as readonly string[]).includes(v);
+const needsThreshold = (m: Metric): m is ThresholdMetric =>
+  (THRESHOLD_METRICS as readonly string[]).includes(m);
 
-// `where`/`filter` for writes also accepts "hidden" (active + not web-visible).
-const SELECTORS = [...METRICS, "hidden"] as const;
+// Write selectors: the bare metrics, plus "hidden" (active + not web-visible).
+// A threshold metric is absent by construction — see THRESHOLD_METRICS.
+const SELECTORS = [...BARE_METRICS, "hidden"] as const;
 
 interface Resolved {
   rows: Product[];
@@ -86,6 +111,11 @@ interface Resolved {
  * They were not, once: the prompt's only mapping from "selling below cost" to
  * `negative_margin` lived inside an unrelated formatting example, and editing
  * that example silently sent the metric routing somewhere else.
+ *
+ * A THRESHOLD metric keeps its wording here too, as a template with an `{n}`
+ * the server substitutes with the number it actually ran. The map stays one
+ * map of plain strings — the parameter rides in the phrase, not in the type —
+ * so there is still exactly one place a criterion is put into words.
  */
 export const METRIC_PHRASES: Record<Metric, string> = {
   // sale axis
@@ -98,9 +128,11 @@ export const METRIC_PHRASES: Record<Metric, string> = {
   below_reorder: "products below their reorder point",
   negative_margin: "products selling below cost",
   all: "products in the catalog",
+  // threshold axis — {n} is filled from the executed argument, never by the model
+  stock_below: "products with stock below {n}",
 };
 
-function metricRows(metric: Metric): Product[] {
+function metricRows(metric: Metric, threshold: number): Product[] {
   switch (metric) {
     case "on_sale":
       return activeSales();
@@ -116,17 +148,48 @@ function metricRows(metric: Metric): Product[] {
       return negativeMargin();
     case "all":
       return allProducts();
+    case "stock_below":
+      return stockBelow(threshold);
   }
 }
 
-function resolveMetric(metric: Metric): Resolved {
-  return { rows: metricRows(metric), phrase: METRIC_PHRASES[metric] };
+/** The criterion in words, with the executed number substituted in. */
+function metricPhrase(metric: Metric, threshold: number): string {
+  return METRIC_PHRASES[metric].replace("{n}", String(threshold));
 }
 
+/**
+ * A read metric's rows and its wording. `threshold` is meaningful only for a
+ * threshold metric; the bare ones ignore it.
+ *
+ * Callers reach this through `readMetric`, which validates the argument first.
+ */
+function resolveMetric(metric: Metric, threshold = 0): Resolved {
+  return { rows: metricRows(metric, threshold), phrase: metricPhrase(metric, threshold) };
+}
+
+/**
+ * Validate a read before it resolves anything. A threshold metric without a
+ * usable number is INVALID — the same stance `set_web_visible` takes on a
+ * missing direction. A default of 50 here would be the server inventing the
+ * criterion it then reports as executed, which is the one thing this layer
+ * exists to prevent.
+ */
+function readMetric(metric: Metric, raw: unknown): Resolved | { error: string } {
+  if (!needsThreshold(metric)) return resolveMetric(metric);
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0)
+    return {
+      error: `${metric} needs a positive numeric threshold — got "${String(raw)}". Pass the number from the question (e.g. threshold: 50); the server will not pick one.`,
+    };
+  return resolveMetric(metric, Math.floor(n));
+}
+
+/** Write selectors resolve from a bare string, so only bare metrics qualify. */
 function resolveSelector(where: string): Resolved | null {
   if (where === "hidden")
     return { rows: hiddenActiveProducts(), phrase: "products hidden from the web store" };
-  if (isMetric(where)) return resolveMetric(where);
+  if (isMetric(where) && !needsThreshold(where)) return resolveMetric(where);
   return null;
 }
 
@@ -160,6 +223,11 @@ export const TOOLS: ProviderTool[] = [
         type: "object",
         properties: {
           metric: { type: "string", enum: [...METRICS] },
+          threshold: {
+            type: "number",
+            description:
+              "Required when metric is stock_below: the number from the question (\"less than 50 in stock\" → 50). Copy it; never round it, never supply one the human did not give.",
+          },
           userIntent: {
             type: "string",
             description:
@@ -195,6 +263,11 @@ export const TOOLS: ProviderTool[] = [
         type: "object",
         properties: {
           filter: { type: "string", enum: [...METRICS, "none"] },
+          threshold: {
+            type: "number",
+            description:
+              "Required when filter is stock_below: the number from the question. Copy it; never supply one the human did not give.",
+          },
           reveal_margin: { type: "boolean" },
           userIntent: {
             type: "string",
@@ -364,7 +437,9 @@ function cleanIntent(raw: unknown): string | undefined {
 function governQuery(id: string, args: Record<string, unknown>): Governed {
   if (!isMetric(args.metric))
     return invalid(id, "query_products", args, `Unknown metric "${String(args.metric)}".`);
-  const { rows, phrase } = resolveMetric(args.metric);
+  const read = readMetric(args.metric, args.threshold);
+  if ("error" in read) return invalid(id, "query_products", args, read.error);
+  const { rows, phrase } = read;
   const targetIds = rows.map((p) => p.sku);
   const revealMargin = args.metric === "negative_margin";
   const effect: ViewEffect = revealMargin
@@ -478,7 +553,9 @@ function governFilter(id: string, args: Record<string, unknown>): Governed {
 
   if (!isMetric(filter))
     return invalid(id, "filter_view", args, `Unknown filter "${String(filter)}".`);
-  const { rows, phrase } = resolveMetric(filter);
+  const read = readMetric(filter, args.threshold);
+  if ("error" in read) return invalid(id, "filter_view", args, read.error);
+  const { rows, phrase } = read;
   const targetIds = rows.map((p) => p.sku);
   // Same gate as `governQuery`: only a phrasing that differs from the executed
   // criterion earns the subtitle.

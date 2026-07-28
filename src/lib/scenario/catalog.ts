@@ -56,6 +56,16 @@ export const activeSales = (today = REFERENCE_DATE): Product[] =>
 export const belowReorderProducts = (): Product[] =>
   catalog.filter(belowReorder);
 
+/**
+ * Stock under an ABSOLUTE number — a different question from `belowReorder`,
+ * which compares each product against its OWN reorder point. On the seed the
+ * two are worlds apart: 13 products are below their reorder point, 20 are below
+ * 50 units, and NB-AU-1001 (42 in stock, reorder 15) is in the second set only.
+ * Answering one with the other is how "less than 50 in stock" came back as 13.
+ */
+export const stockBelowProducts = (threshold: number): Product[] =>
+  catalog.filter((p) => p.stock < threshold);
+
 export const negativeMargin = (): Product[] =>
   catalog.filter((p) => marginPct(p) < 0);
 
