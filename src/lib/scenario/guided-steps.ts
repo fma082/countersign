@@ -52,7 +52,7 @@ export const GUIDED_STEPS: GuidedStep[] = [
     label: "Clear all expired sale prices",
     tier: "destructive · needs approval",
     prompt: "Clear all the expired sale prices.",
-    note: "**The engine is halted here.** Only you move past it — the model can't reopen or skip the gate. The resolver already left the one active sale out; unchecking anything else is your call, on context the data doesn't hold.",
+    note: "**The engine is halted here.** Only you move past it — the model can't reopen or skip the gate. The resolver already left the unexpired sales out; unchecking anything else is your call, on context the data doesn't hold.",
     fallback: { tool: "clear_expired_sales", args: {} },
   },
 ];

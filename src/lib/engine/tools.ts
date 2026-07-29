@@ -142,7 +142,7 @@ interface MetricSpec {
 
 export const METRIC_SPEC: Record<Metric, MetricSpec> = {
   // sale axis
-  on_sale: { phrase: "products on an active, valid sale", measure: "none" },
+  on_sale: { phrase: "products on a sale that has not expired", measure: "none" },
   expired_sale: { phrase: "products still on an expired sale price", measure: "recency" },
   // status axis
   active: { phrase: "products with active status", measure: "none" },
@@ -822,7 +822,7 @@ function planClear(): Plan {
   return {
     title: `Clear ${preview.length} expired sale price${preview.length === 1 ? "" : "s"}`,
     description:
-      "Removes the sale price from products whose sale has ended, reverting each to its regular price. The one active, valid sale is left untouched.",
+      "Removes the sale price from products whose sale has ended, reverting each to its regular price. Sales that have not ended are left untouched — including one with no end date on record, which this sweep cannot evaluate at all.",
     pendingSummary: `${preview.length} products would revert to their regular price.`,
     targetIds: preview.map((c) => c.sku),
     items: preview.map((c) => ({

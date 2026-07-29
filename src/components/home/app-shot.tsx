@@ -36,7 +36,7 @@ const gate: GatePreview = {
   tool: "clear_expired_sales",
   title: `Clear ${expired.length} expired sale prices`,
   description:
-    "Removes the sale price from products whose sale has ended, reverting each to its regular price. The one active, valid sale is left untouched.",
+    "Removes the sale price from products whose sale has ended, reverting each to its regular price. Sales that have not ended are left untouched — including one with no end date on record, which this sweep cannot evaluate at all.",
   targetIds,
   items: expired.map((p) => ({
     sku: p.sku,

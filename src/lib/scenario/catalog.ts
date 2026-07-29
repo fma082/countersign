@@ -160,8 +160,13 @@ export const previewClearExpiredSales = (today = REFERENCE_DATE): ClearedSale[] 
 
 /**
  * Execute the sweep. Clears salePrice + saleEnds on expired-sale rows only, and
- * only within `allowed` when a subset was approved. The active control sale
- * (NB-LT-2004) is never matched. Returns what changed.
+ * only within `allowed` when a subset was approved. Returns what changed.
+ *
+ * Two sales are never matched, for two different reasons: the dated control
+ * (NB-LT-2004) because its end date is in the future, and the undated one
+ * (NB-AU-1003) because `saleExpired` needs a date to compare and there is none.
+ * The second is a real blind spot, not a safeguard — a promo with no end date
+ * never appears in a sweep of expired sales, however long it has been running.
  */
 export const applyClearExpiredSales = (
   allowed?: string[],

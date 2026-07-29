@@ -5,8 +5,8 @@
  * Conflicts are planted on purpose so the agent can *discover* problems
  * instead of being told about them: expired sale prices, some of them selling
  * below cost, stock under the reorder point, rows hidden from the web store,
- * a status column that is not uniform, and one valid sale as a control case
- * that must NOT be swept up.
+ * a status column that is not uniform, one sale price with no end date on
+ * record, and one valid dated sale as a control case that must NOT be swept up.
  *
  * The rosters and the counts live in `PLANTED` / `SEED_COUNTS` at the foot of
  * this file, derived from the catalog and asserted against it at import. They
@@ -40,7 +40,8 @@ export const PRODUCTS: Product[] = [
   // ── Audio ────────────────────────────────────────────────────────────
   { sku: "NB-AU-1001", name: "Studio Monitor Stand, Pair", category: "Audio", supplier: "Meridian Supply", status: "active", price: 129.00, cost: 71.50, stock: 42, reorderPoint: 15, salePrice: null, saleEnds: null, webVisible: true, lastUpdated: "2026-06-14" },
   { sku: "NB-AU-1002", name: "Desktop Mic Boom Arm", category: "Audio", supplier: "Ardent Components", status: "active", price: 64.00, cost: 39.00, stock: 8, reorderPoint: 20, salePrice: 44.90, saleEnds: "2025-11-30", webVisible: true, lastUpdated: "2025-11-02" },
-  { sku: "NB-AU-1003", name: "In-Line Headphone Amp", category: "Audio", supplier: "Kestrel Trading", status: "active", price: 89.00, cost: 58.00, stock: 61, reorderPoint: 20, salePrice: null, saleEnds: null, webVisible: true, lastUpdated: "2026-05-30" },
+  // Planted: a sale price with NO end date on record. See `undatedSale`.
+  { sku: "NB-AU-1003", name: "In-Line Headphone Amp", category: "Audio", supplier: "Kestrel Trading", status: "active", price: 89.00, cost: 58.00, stock: 61, reorderPoint: 20, salePrice: 79.00, saleEnds: null, webVisible: true, lastUpdated: "2026-05-30" },
   { sku: "NB-AU-1004", name: "XLR Patch Bay, 24-Channel", category: "Audio", supplier: "Meridian Supply", status: "active", price: 219.00, cost: 168.00, stock: 5, reorderPoint: 10, salePrice: null, saleEnds: null, webVisible: true, lastUpdated: "2026-03-11" },
   { sku: "NB-AU-1005", name: "Acoustic Panel Set, 12-Pack", category: "Audio", supplier: "Northwind Parts", status: "discontinued", price: 149.00, cost: 96.00, stock: 0, reorderPoint: 10, salePrice: null, saleEnds: null, webVisible: false, lastUpdated: "2025-09-08" },
 
@@ -140,10 +141,31 @@ const PLANTED: Record<PlantedKey, PlantedGroup> = {
     match: (p) => effectivePrice(p) < p.cost,
   },
   activeSale: {
-    // The control case that must survive any sweep. NB-LT-2004 ends 2026-08-31.
-    label: "on a valid, unexpired sale",
-    skus: ["NB-LT-2004"],
+    // What `on_sale` resolves to — every sale the expired-sale sweep leaves
+    // alone. TWO different situations land here, and the difference is the
+    // point of keeping `undatedSale` separate below:
+    //   NB-LT-2004  ends 2026-08-31 — the dated control that must survive a
+    //               sweep, because its date says it is still running.
+    //   NB-AU-1003  no end date at all — not expired because nothing records
+    //               when it would expire, which is why the sweep cannot reason
+    //               about it either.
+    label: "on a sale the expired-sale sweep leaves alone",
+    skus: ["NB-LT-2004", "NB-AU-1003"],
     match: (p) => p.salePrice !== null && !saleExpired(p),
+  },
+  undatedSale: {
+    // Sale price on record, validity period missing. In production this is a
+    // product someone set a promo price on and never filled in the end date:
+    // the discount runs indefinitely because nothing exists to stop it, and no
+    // report of "expired sales" will ever surface it.
+    //
+    // In this codebase it is what exercises product_detail's `missing` state —
+    // the sale row APPLIES (there is a sale) and its end date did not arrive,
+    // which is a different thing from the 23 products that have no sale at all
+    // and whose sale rows are simply not rendered.
+    label: "on sale with no end date on record",
+    skus: ["NB-AU-1003"],
+    match: (p) => p.salePrice !== null && p.saleEnds === null,
   },
   belowReorder: {
     // `belowReorder` is stock < reorderPoint and knows nothing about status, so
@@ -173,6 +195,7 @@ type PlantedKey =
   | "expiredSale"
   | "belowCost"
   | "activeSale"
+  | "undatedSale"
   | "belowReorder"
   | "hidden"
   | "discontinued";
