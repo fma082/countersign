@@ -18,6 +18,8 @@ import type { PublicProduct } from "@/lib/scenario/catalog";
  * The header states the criterion the SERVER executed, never the user's
  * phrasing. `userIntent` appears under it as an attribution when it is present,
  * and its absence degrades nothing — it selects no rows and computes no number.
+ * It is a QUOTE of the human, taken server-side from the message that opened the
+ * turn, so the line under the header can only ever be something they said.
  *
  * The row is TWO lines by design. This component lives inside the copilot
  * panel, so ~380px is the primary width, not the degraded one; on one line the

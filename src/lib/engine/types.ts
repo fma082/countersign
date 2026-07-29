@@ -152,10 +152,14 @@ export interface RenderPayload<T = unknown> {
   criterionLabel: string;
   data: T;
   /**
-   * The user's own phrasing for what they asked, as the model reported it —
-   * the component's subtitle ("interpreted from: …"). It rides this channel and
-   * not the model's on purpose: fed back to the model it gets narrated as the
-   * DEFINITION of the criterion, which is false. See `governQuery`.
+   * The human's own phrasing — the component's subtitle ("interpreted from:
+   * …"). Taken from the message that opened THIS turn, server-side; the model
+   * neither supplies it nor has an argument to put it in, so it cannot be a
+   * question from an earlier turn. See `turnMessage` and `cleanIntent`.
+   *
+   * It rides this channel and not the model's on purpose: fed back to the model
+   * it gets narrated as the DEFINITION of the criterion, which is false. See
+   * `governQuery`.
    */
   userIntent?: string;
 }

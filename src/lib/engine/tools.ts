@@ -349,11 +349,6 @@ export const TOOLS: ProviderTool[] = [
             description:
               "Required when metric is stock_below: the number from the question (\"less than 50 in stock\" → 50). Copy it; never round it, never supply one the human did not give.",
           },
-          userIntent: {
-            type: "string",
-            description:
-              "Optional. The user's own words for what they asked, verbatim. Used only as a subtitle above the results; it selects nothing.",
-          },
         },
         required: ["metric"],
       },
@@ -390,11 +385,6 @@ export const TOOLS: ProviderTool[] = [
               "Required when filter is stock_below: the number from the question. Copy it; never supply one the human did not give.",
           },
           reveal_margin: { type: "boolean" },
-          userIntent: {
-            type: "string",
-            description:
-              "Optional. The user's own words for what they asked, verbatim. Used only as a subtitle above the results; it selects nothing.",
-          },
         },
         required: ["filter"],
       },
@@ -491,14 +481,24 @@ const modelOnly = (modelPayload: unknown): ToolOutcome => ({ modelPayload });
 let gateSeq = 0;
 let actionSeq = 0;
 
-export function govern(id: string, name: string, args: Record<string, unknown>): Governed {
+/**
+ * `turnMessage` is the human's message that triggered THIS turn, passed down by
+ * the route. It is the only source of the read subtitle: the model has no say
+ * in it and no argument to carry it in. See `cleanIntent`.
+ */
+export function govern(
+  id: string,
+  name: string,
+  args: Record<string, unknown>,
+  turnMessage?: string,
+): Governed {
   switch (name) {
     case "query_products":
-      return governQuery(id, args);
+      return governQuery(id, args, turnMessage);
     case "inspect_product":
       return governInspect(id, args);
     case "filter_view":
-      return governFilter(id, args);
+      return governFilter(id, args, turnMessage);
     case "update_price":
       return governFieldWrite(id, "update_price", "price", args);
     case "adjust_stock":
@@ -514,16 +514,38 @@ export function govern(id: string, name: string, args: Record<string, unknown>):
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────
+/** How much of the human's message the subtitle will quote. */
+const INTENT_MAX = 120;
+
 /**
- * The user's own phrasing, as the model reported it. Model data, therefore
- * untrusted — but it executes nothing: it resolves no target, picks no metric,
- * and only ever feeds a subtitle. So we take it liberally and drop it when it is
- * empty or shaped wrong, rather than refusing the read over it.
+ * The human's phrasing, tidied for display. `raw` is the message that triggered
+ * THIS turn, handed down by the route — not a tool argument.
+ *
+ * It used to be a tool argument, and the model dragged a previous turn's
+ * question into the current one: an `expired_sale` render captioned
+ * `interpreted from: "products selling below cost"`, which is a question the
+ * human had asked one turn earlier and was not asking now. The subtitle exists
+ * to mark the gap between what was asked and what was run; filled with the
+ * wrong sentence it attributes to the human a question they never asked, which
+ * is worse than having no subtitle at all. A mark of transparency that lies is
+ * not a weaker guarantee — it is a false one.
+ *
+ * Asking the model to stop dragging it would be the same class of fix this
+ * project argues against everywhere else. The server has the turn's message, so
+ * the server takes it from there and the argument is gone from the schema.
+ *
+ * An over-long message is cut at a word boundary and ELLIPSED. A silent
+ * truncation would put a sentence in quotation marks that the human did not
+ * finish saying — a smaller version of the same lie.
  */
 function cleanIntent(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
-  const text = raw.replace(/\s+/g, " ").trim().slice(0, 120);
-  return text ? text : undefined;
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (!text) return undefined;
+  if (text.length <= INTENT_MAX) return text;
+  const cut = text.slice(0, INTENT_MAX);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 40 ? cut.slice(0, lastSpace) : cut).replace(/[,;:.]$/, "")}…`;
 }
 
 /**
@@ -554,8 +576,15 @@ function cleanIntent(raw: unknown): string | undefined {
  * forbidding exactly that was tried first and the 3b model ignored it, which is
  * the whole argument: the prompt asks, the payload decides. The field has no
  * reader on the model channel anyway — the subtitle it feeds is the client's.
+ *
+ * The subtitle's TEXT is the turn's own message, never `args` — the model does
+ * not choose which question gets attributed to the human.
  */
-function governQuery(id: string, args: Record<string, unknown>): Governed {
+function governQuery(
+  id: string,
+  args: Record<string, unknown>,
+  turnMessage?: string,
+): Governed {
   if (!isMetric(args.metric))
     return invalid(id, "query_products", args, `Unknown metric "${String(args.metric)}".`);
   const read = readMetric(args.metric, args.threshold);
@@ -568,7 +597,7 @@ function governQuery(id: string, args: Record<string, unknown>): Governed {
     : {};
   // Kept only if it differs from what we ran. A subtitle that repeats the
   // header teaches the human to stop reading the subtitle.
-  const userIntent = subtitleIntent(cleanIntent(args.userIntent), phrase);
+  const userIntent = subtitleIntent(cleanIntent(turnMessage), phrase);
   return {
     kind: "safe",
     event: mk(id, "query_products", "safe", "ok", `${rows.length} ${phrase}.`, args, targetIds),
@@ -650,7 +679,11 @@ function governInspect(id: string, args: Record<string, unknown>): Governed {
  * split closed for `query_products`, still open here because the label was
  * missing. So the label ships, the SKUs do not, and the rows go to the client.
  */
-function governFilter(id: string, args: Record<string, unknown>): Governed {
+function governFilter(
+  id: string,
+  args: Record<string, unknown>,
+  turnMessage?: string,
+): Governed {
   const filter = args.filter;
   const revealMargin = args.reveal_margin === true;
 
@@ -679,9 +712,8 @@ function governFilter(id: string, args: Record<string, unknown>): Governed {
   if ("error" in read) return invalid(id, "filter_view", args, read.error);
   const { rows, phrase } = read;
   const targetIds = rows.map((p) => p.sku);
-  // Same gate as `governQuery`: only a phrasing that differs from the executed
-  // criterion earns the subtitle.
-  const userIntent = subtitleIntent(cleanIntent(args.userIntent), phrase);
+  // Same gate as `governQuery`, and the same source: this turn's message.
+  const userIntent = subtitleIntent(cleanIntent(turnMessage), phrase);
   return {
     kind: "safe",
     event: mk(id, "filter_view", "safe", "ok", `Filtered to ${rows.length} ${phrase}${revealMargin ? ", Margin revealed" : ""}.`, args, targetIds),

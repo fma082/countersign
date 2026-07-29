@@ -63,12 +63,12 @@ Today is 2026-07-21. The catalog has 30 products.
 Operate the panel through tools. Prefer tools over guessing.
 
 Reads (run on their own):
-- query_products(metric, userIntent): count a group and show the human the matching rows. ALWAYS fill userIntent with what the user asked for, in THEIR words, copied from their message — never leave it empty. Metrics sit on DISTINCT AXES — never cross them:
+- query_products(metric): count a group and show the human the matching rows. Metrics sit on DISTINCT AXES — never cross them:
 ${METRIC_VOCABULARY}
   Match the user's words to the metric whose meaning above covers them, and pick that metric only. "How many active products?" → active (STATUS), never on_sale.
   THE STOCK AXIS HAS TWO METRICS AND THEY ARE NOT INTERCHANGEABLE. A question naming a NUMBER of units is stock_below, and you must pass that number as threshold: "less than 50 in stock", "under 50 units", "stock below 50", "menos de 50 en stock", "con menos de 50 unidades" → stock_below with threshold: 50. Only a question with NO number — "running low", "which need reordering", "below the reorder point", "hay que reponer" — is below_reorder. Never answer a numbered question with below_reorder: it compares each product to its own reorder point, so it does not contain the user's number at all.
 - inspect_product(sku): the real status/stock/reorder/margin/sale of ONE product. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?").
-- filter_view(filter, reveal_margin?, userIntent): filter the table; filter ∈ those metrics or "none". Fill userIntent the same way.
+- filter_view(filter, reveal_margin?): filter the table; filter ∈ those metrics or "none".
 
 Reversible writes (run immediately, one product, undoable):
 - update_price(sku, price)
@@ -201,6 +201,28 @@ function oneFrame(frame: StreamFrame, status: number, extra?: Record<string, str
 type Emit = (frame: StreamFrame) => void;
 
 /**
+ * The message that opened this turn — the LAST thing the human said, which is
+ * the only phrasing a render of this turn may be attributed to.
+ *
+ * This used to be a tool argument the model filled in, and the model dragged a
+ * previous turn's question forward: an `expired_sale` list captioned with the
+ * `negative_margin` question from the turn before. The subtitle claims to quote
+ * the human, so a stale one puts words in their mouth.
+ *
+ * The route holds the whole history and therefore already knows which message
+ * is current; the model was never needed for this. Reading it here — once, at
+ * the top of the turn, before any tool runs — means every render below is
+ * attributed to the same sentence, and no round of a multi-tool turn can pick
+ * up a different one.
+ */
+function turnMessage(history: ChatMessage[]): string | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === "user") return history[i].content;
+  }
+  return undefined;
+}
+
+/**
  * A normal turn: stream (with transient-failure retries), govern tools, run
  * reads/reversibles, stop at a gate.
  *
@@ -218,6 +240,9 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
 
   const messages: ChatMessage[] = [{ role: "system", content: SYSTEM_PROMPT }, ...history];
   const render = renderSlot(emit);
+  // Read once, here, from the message that OPENED this turn. Every render in the
+  // turn is attributed to this sentence and to no other. See `turnMessage`.
+  const turn = turnMessage(history);
   let anyToolRan = false;
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -245,7 +270,7 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
         render.flush();
         emit({ type: "done" });
       } else if (fallback) {
-        runFallback(fallback, emit, render);
+        runFallback(fallback, emit, render, turn);
       } else {
         emit({ type: "error", message: streamError.message, reason: streamError.reason });
       }
@@ -270,7 +295,7 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
     });
 
     for (const call of pending) {
-      const decision = govern(call.id, call.name, call.args);
+      const decision = govern(call.id, call.name, call.args, turn);
 
       if (decision.kind === "gate") {
         // Destructive op waits FIRST. Remember what we offered so approval
@@ -314,8 +339,13 @@ async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback):
  * targetIds are the real, server-resolved article. The only thing missing is the
  * model's spoken narration, and the paused note says so.
  */
-function runFallback(fallback: Fallback, emit: Emit, render: RenderSlot): void {
-  const decision = govern("call_fallback", fallback.tool, fallback.args);
+function runFallback(
+  fallback: Fallback,
+  emit: Emit,
+  render: RenderSlot,
+  turn?: string,
+): void {
+  const decision = govern("call_fallback", fallback.tool, fallback.args, turn);
   emit({ type: "paused", text: PAUSED_FALLBACK });
 
   if (decision.kind === "gate") {
