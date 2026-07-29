@@ -165,6 +165,43 @@ export interface ToolOutcome<T = unknown> {
   renderPayload?: RenderPayload<T>;
 }
 
+/**
+ * What a row in `product_list` MEASURES — resolved server-side, per row, from
+ * the criterion that was executed.
+ *
+ * The measure is a property of the CRITERION, not of the product. A row is not
+ * inherently a stock/reorder ratio; it is a ratio because `below_reorder` ran.
+ * `negative_margin` returned the same products and measures a signed
+ * percentage; `discontinued` measures nothing at all. The old component drew a
+ * stock bar for all three, so a `negative_margin` result carried a bar against
+ * a dimension its predicate never touched, and a `stock_below(50)` result drew
+ * one against `reorderPoint` — a comparison nobody had run.
+ *
+ * So the kind travels with the data, and each kind carries ONLY the fields it
+ * needs. There are no raw fields here to re-derive from: the client cannot
+ * reach for `reorderPoint` when the criterion never compared against it,
+ * because a `magnitude` measure does not have one.
+ *
+ * COLUMN COHERENCE: every row in a single render carries the same `kind`,
+ * because one criterion produced them all. A discontinued product inside a
+ * `below_reorder` result still gets a ratio bar — the column measures the
+ * question, not each row's own biography.
+ */
+export type RowMeasure =
+  /** A value against the reference it was compared to. The only kind with a bar. */
+  | { kind: "ratio"; value: number; reference: number }
+  /** A signed number that stands alone. The reference lives in the header. */
+  | { kind: "magnitude"; value: number; unit: string; sign: "negative" | "positive" }
+  /** A distance in time, plus the raw date it is measured from. */
+  | { kind: "recency"; endedDaysAgo: number; date: string }
+  /** Nothing to measure. The row collapses to identity — no bar, no reserved gap. */
+  | { kind: "none" };
+
+export type MeasureKind = RowMeasure["kind"];
+
+/** A row shipped to the client with its measure already resolved. */
+export type Measured<T> = T & { measure: RowMeasure };
+
 /** A row patch the client applies to the table. Only the changed fields appear. */
 export interface RowMutation {
   sku: string;

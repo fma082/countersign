@@ -15,7 +15,7 @@
  */
 
 import { streamChatResilient } from "@/lib/engine/resilient";
-import { govern, executeGate, executeUndo, METRIC_PHRASES, TOOLS } from "@/lib/engine/tools";
+import { govern, executeGate, executeUndo, METRIC_SPEC, TOOLS } from "@/lib/engine/tools";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
 import { rateLimit, clientIp } from "@/lib/engine/rate-limit";
 import { resetCatalog } from "@/lib/scenario/catalog";
@@ -53,7 +53,7 @@ const METRIC_VOCABULARY = (
   .map(
     ([axis, metrics]) =>
       `    · ${axis}: ` +
-      metrics.map((m) => `${m} = ${METRIC_PHRASES[m]}`).join(" · "),
+      metrics.map((m) => `${m} = ${METRIC_SPEC[m].phrase}`).join(" · "),
   )
   .join("\n");
 

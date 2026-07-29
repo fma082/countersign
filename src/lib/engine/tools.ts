@@ -36,6 +36,7 @@ import {
   setFieldBatch,
   stockBelowProducts as stockBelow,
   toPublic,
+  type PublicProduct,
   type WriteField,
 } from "@/lib/scenario/catalog";
 import { effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
@@ -43,7 +44,10 @@ import { subtitleIntent } from "./intent-subtitle";
 import type {
   GateItem,
   GatePreview,
+  Measured,
+  MeasureKind,
   ProviderTool,
+  RowMeasure,
   RowMutation,
   ToolEvent,
   ToolOutcome,
@@ -100,36 +104,52 @@ const SELECTORS = [...BARE_METRICS, "hidden"] as const;
 interface Resolved {
   rows: Product[];
   phrase: string;
+  /** The criterion that produced the rows — what decides how a row is measured. */
+  metric: Metric;
+  /** The executed number, for a threshold metric. It is the ratio's reference. */
+  threshold: number;
 }
 
 /**
- * The one place a metric is put into words. `criterionLabel` is read from here,
- * and so is the metric vocabulary in the system prompt — so the phrase the model
- * is told a metric MEANS and the phrase it is handed back after running it are
- * the same string by construction, not by two people remembering to match.
+ * The one place a metric is DESCRIBED. `criterionLabel` is read from here, and
+ * so is the metric vocabulary in the system prompt — so the phrase the model is
+ * told a metric MEANS and the phrase it is handed back after running it are the
+ * same string by construction, not by two people remembering to match.
  *
  * They were not, once: the prompt's only mapping from "selling below cost" to
  * `negative_margin` lived inside an unrelated formatting example, and editing
  * that example silently sent the metric routing somewhere else.
  *
  * A THRESHOLD metric keeps its wording here too, as a template with an `{n}`
- * the server substitutes with the number it actually ran. The map stays one
- * map of plain strings — the parameter rides in the phrase, not in the type —
- * so there is still exactly one place a criterion is put into words.
+ * the server substitutes with the number it actually ran — the parameter rides
+ * in the phrase, not in the type.
+ *
+ * `measure` is the second attribute of the same entry: WHAT A ROW OF THIS
+ * CRITERION MEASURES. It belongs next to the phrase because it is the same kind
+ * of fact — a property of the criterion, decided when the criterion is defined,
+ * not inferred later from whatever fields happened to come back. The rows of
+ * `negative_margin` and `below_reorder` are the same product objects; only the
+ * question that selected them differs, so only this table can say that one is a
+ * signed percentage and the other a ratio against a reorder point.
  */
-export const METRIC_PHRASES: Record<Metric, string> = {
+interface MetricSpec {
+  phrase: string;
+  measure: MeasureKind;
+}
+
+export const METRIC_SPEC: Record<Metric, MetricSpec> = {
   // sale axis
-  on_sale: "products on an active, valid sale",
-  expired_sale: "products still on an expired sale price",
+  on_sale: { phrase: "products on an active, valid sale", measure: "none" },
+  expired_sale: { phrase: "products still on an expired sale price", measure: "recency" },
   // status axis
-  active: "products with active status",
-  discontinued: "products that are discontinued",
+  active: { phrase: "products with active status", measure: "none" },
+  discontinued: { phrase: "products that are discontinued", measure: "none" },
   // other axes
-  below_reorder: "products below their reorder point",
-  negative_margin: "products selling below cost",
-  all: "products in the catalog",
+  below_reorder: { phrase: "products below their reorder point", measure: "ratio" },
+  negative_margin: { phrase: "products selling below cost", measure: "magnitude" },
+  all: { phrase: "products in the catalog", measure: "none" },
   // threshold axis — {n} is filled from the executed argument, never by the model
-  stock_below: "products with stock below {n}",
+  stock_below: { phrase: "products with stock below {n}", measure: "ratio" },
 };
 
 function metricRows(metric: Metric, threshold: number): Product[] {
@@ -155,7 +175,7 @@ function metricRows(metric: Metric, threshold: number): Product[] {
 
 /** The criterion in words, with the executed number substituted in. */
 function metricPhrase(metric: Metric, threshold: number): string {
-  return METRIC_PHRASES[metric].replace("{n}", String(threshold));
+  return METRIC_SPEC[metric].phrase.replace("{n}", String(threshold));
 }
 
 /**
@@ -165,7 +185,12 @@ function metricPhrase(metric: Metric, threshold: number): string {
  * Callers reach this through `readMetric`, which validates the argument first.
  */
 function resolveMetric(metric: Metric, threshold = 0): Resolved {
-  return { rows: metricRows(metric, threshold), phrase: metricPhrase(metric, threshold) };
+  return {
+    rows: metricRows(metric, threshold),
+    phrase: metricPhrase(metric, threshold),
+    metric,
+    threshold,
+  };
 }
 
 /**
@@ -185,12 +210,108 @@ function readMetric(metric: Metric, raw: unknown): Resolved | { error: string } 
   return resolveMetric(metric, Math.floor(n));
 }
 
+/** A write selector resolves rows and a phrase, and nothing is measured off it. */
+type Selected = Pick<Resolved, "rows" | "phrase">;
+
 /** Write selectors resolve from a bare string, so only bare metrics qualify. */
-function resolveSelector(where: string): Resolved | null {
+function resolveSelector(where: string): Selected | null {
   if (where === "hidden")
     return { rows: hiddenActiveProducts(), phrase: "products hidden from the web store" };
   if (isMetric(where) && !needsThreshold(where)) return resolveMetric(where);
   return null;
+}
+
+// ── The measure: resolved here, never inferred there ───────────────────────
+/**
+ * The rows a read will render, each with its measure already computed.
+ *
+ * This is the read's counterpart to `criterionLabel`: the server knows which
+ * criterion it ran, so it also knows what the rows measure and what they should
+ * be ordered by. The client used to derive both from `stock / reorderPoint`,
+ * which is only the right answer for `below_reorder` — a `negative_margin`
+ * result showed a stock bar, a `stock_below(50)` result showed a bar against a
+ * reorder point nobody had compared against, and `discontinued` showed a bar
+ * measuring nothing. Same class of failure as a model renaming a criterion: a
+ * consumer restating a result in terms the producer never used.
+ *
+ * Every row here carries the SAME kind, because one criterion produced them all.
+ */
+function measuredRows(r: Resolved): Measured<PublicProduct>[] {
+  return sortByMeasure(r.rows.map((p) => ({ ...toPublic(p), measure: measureOf(r, p) })));
+}
+
+/** One row's measure, from the criterion — never from the shape of the data. */
+function measureOf({ metric, threshold }: Resolved, p: Product): RowMeasure {
+  switch (METRIC_SPEC[metric].measure) {
+    case "ratio":
+      // The reference is whatever the predicate actually compared against:
+      // the product's own reorder point, or the human's absolute number.
+      return {
+        kind: "ratio",
+        value: p.stock,
+        reference: metric === "stock_below" ? threshold : p.reorderPoint,
+      };
+    case "magnitude": {
+      // Margin reaches the client only under a criterion that is ABOUT margin —
+      // the same tool call that reveals the column. `cost` never travels.
+      const value = Math.round(marginPct(p) * 10) / 10;
+      return { kind: "magnitude", value, unit: "%", sign: value < 0 ? "negative" : "positive" };
+    }
+    case "recency": {
+      // `expired_sale` resolves through `saleExpired`, which is false when
+      // `saleEnds` is null — the date is guaranteed by the predicate that
+      // selected the row, not by an assertion here.
+      const date = p.saleEnds ?? REFERENCE_DATE;
+      return { kind: "recency", endedDaysAgo: daysSince(date), date };
+    }
+    case "none":
+      return { kind: "none" };
+  }
+}
+
+const DAY_MS = 86_400_000;
+const daysSince = (iso: string, today = REFERENCE_DATE): number =>
+  Math.max(0, Math.round((Date.parse(today) - Date.parse(iso)) / DAY_MS));
+
+/**
+ * Worst first — and what "worst" means is a property of the measure, so the
+ * order ships from here rather than being re-derived downstream.
+ *
+ *   ratio      lowest value/reference first (the deepest deficit)
+ *   magnitude  largest absolute value first (the most negative margin)
+ *   recency    oldest first (the sale that has been wrong the longest)
+ *   none       nothing to rank — alphabetical by SKU
+ *
+ * Discontinued rows sink to the bottom under every kind: they are not
+ * restocked, repriced or re-listed, so putting them on top would point the eye
+ * at the one group not to act on. SKU breaks every tie, so the order is stable
+ * between renders.
+ */
+function sortByMeasure(rows: Measured<PublicProduct>[]): Measured<PublicProduct>[] {
+  return [...rows].sort((a, b) => {
+    const aOut = a.status === "discontinued";
+    const bOut = b.status === "discontinued";
+    if (aOut !== bOut) return aOut ? 1 : -1;
+    const d = severity(a.measure) - severity(b.measure);
+    if (d !== 0) return d;
+    return a.sku.localeCompare(b.sku);
+  });
+}
+
+/** Ascending = worst first, whatever the kind. */
+function severity(m: RowMeasure): number {
+  switch (m.kind) {
+    case "ratio":
+      // A reference of 0 makes the deficit uncomputable, not infinite: the row
+      // sinks within its group rather than dividing by zero.
+      return m.reference > 0 ? m.value / m.reference : Number.POSITIVE_INFINITY;
+    case "magnitude":
+      return -Math.abs(m.value);
+    case "recency":
+      return -m.endedDaysAgo;
+    case "none":
+      return 0;
+  }
 }
 
 const marginsFor = (rows: Product[]): Record<string, number> =>
@@ -461,16 +582,17 @@ function governQuery(id: string, args: Record<string, unknown>): Governed {
         criterionLabel: phrase,
         rendered: true,
       },
-      // The full public product objects (cost stripped by `toPublic`), so the
-      // field the metric filters on — `reorderPoint` — travels alongside
-      // `stock` and the client can render a row without re-deriving anything.
+      // The public product objects (cost stripped by `toPublic`), each carrying
+      // the measure this criterion produced and already in the order this
+      // criterion ranks them by. The client renders the list it is handed: it
+      // computes no ratio, chooses no bar and re-sorts nothing.
       // `userIntent` rides here too: it is the component's subtitle, and the
       // client is its only reader.
       renderPayload: {
         component: "product_list",
         count: rows.length,
         criterionLabel: phrase,
-        data: rows.map(toPublic),
+        data: measuredRows(read),
         ...(userIntent ? { userIntent } : {}),
       },
     },
@@ -573,12 +695,13 @@ function governFilter(id: string, args: Record<string, unknown>): Governed {
         criterionLabel: phrase,
         rendered: true,
       },
-      // Same shape of data as a query, so the same component reads it.
+      // Same shape of data as a query — measured and ordered by the criterion
+      // this call ran — so the same component reads it.
       renderPayload: {
         component: "product_list",
         count: rows.length,
         criterionLabel: phrase,
-        data: rows.map(toPublic),
+        data: measuredRows(read),
         ...(userIntent ? { userIntent } : {}),
       },
     },

@@ -1,6 +1,6 @@
 "use client";
 
-import type { RenderPayload } from "@/lib/engine/types";
+import type { Measured, RenderPayload, RowMeasure } from "@/lib/engine/types";
 import type { PublicProduct } from "@/lib/scenario/catalog";
 
 /**
@@ -10,9 +10,10 @@ import type { PublicProduct } from "@/lib/scenario/catalog";
  * Monochrome, like the rest of the system. Being below a reorder point is a
  * condition of the DATA, not a fault of the system, so it gets no red — red and
  * green belong to error and success and nothing else. Severity is carried by
- * ORDER (worst deficit first) and by a neutral ratio bar. The only strong
- * treatment in the list is "out of stock", because that one is binary and
- * admits no degrees; a deficit does.
+ * ORDER (worst first) and by a neutral bar. The only strong treatments in the
+ * list are "out of stock", because that one is binary and admits no degrees,
+ * and a negative margin, because money lost per sale is a real business state
+ * rather than a neutral condition of the data.
  *
  * The header states the criterion the SERVER executed, never the user's
  * phrasing. `userIntent` appears under it as an attribution when it is present,
@@ -22,37 +23,16 @@ import type { PublicProduct } from "@/lib/scenario/catalog";
  * panel, so ~380px is the primary width, not the degraded one; on one line the
  * name was squeezed to nothing by the badges and rendered without even an
  * ellipsis — a row taking up space to promise a datum it never delivered.
+ *
+ * WHAT LINE 2 SHOWS IS NOT THIS COMPONENT'S DECISION. It renders `measure`,
+ * which the server resolved from the criterion it ran. Every row of a render
+ * carries the same kind, so line 2 is one column and not a per-row guess. The
+ * component reads no `stock` and no `reorderPoint`: it could only compare them
+ * under a criterion that never asked the question.
  */
-
-/** How much of the reorder point is still on the shelf. */
-function ratios(p: PublicProduct): { sort: number; bar: number } {
-  // A reorder point of 0 makes the deficit uncomputable, not infinite. The bar
-  // reads full (nothing is missing against no target) and the row sinks to the
-  // bottom of its group rather than dividing by zero.
-  if (p.reorderPoint <= 0) return { sort: Number.POSITIVE_INFINITY, bar: 1 };
-  const r = p.stock / p.reorderPoint;
-  return { sort: r, bar: Math.min(Math.max(r, 0), 1) };
-}
-
-/**
- * Worst deficit first, discontinued last. Discontinued rows are not restocked,
- * so putting them at the top would point the eye at the one thing not to act
- * on. Ties break on SKU so the order is stable between renders.
- */
-export function sortProductRows(rows: readonly PublicProduct[]): PublicProduct[] {
-  return [...rows].sort((a, b) => {
-    const aOut = a.status === "discontinued";
-    const bOut = b.status === "discontinued";
-    if (aOut !== bOut) return aOut ? 1 : -1;
-    const d = ratios(a).sort - ratios(b).sort;
-    if (d !== 0) return d;
-    return a.sku.localeCompare(b.sku);
-  });
-}
 
 export function ProductList({ payload }: { payload: RenderPayload }) {
-  const rows = Array.isArray(payload.data) ? (payload.data as PublicProduct[]) : [];
-  const sorted = sortProductRows(rows);
+  const rows = Array.isArray(payload.data) ? (payload.data as Measured<PublicProduct>[]) : [];
 
   return (
     // `shrink-0` is load-bearing, not tidying. The copilot log is a flex column
@@ -76,12 +56,15 @@ export function ProductList({ payload }: { payload: RenderPayload }) {
         )}
       </header>
 
-      {sorted.length === 0 ? (
+      {rows.length === 0 ? (
         // Zero results is a valid answer, not a failure. No error token, no icon.
         <p className="px-3.5 py-4 text-[12.5px] text-ink-2">No products match this criterion.</p>
       ) : (
         <ul>
-          {sorted.map((p) => (
+          {/* Rendered in the order the server ranked them. Worst first means
+              something different under each measure, and the criterion is what
+              knows which — so the ordering ships with the rows. */}
+          {rows.map((p) => (
             <ProductRow key={p.sku} product={p} />
           ))}
         </ul>
@@ -90,8 +73,7 @@ export function ProductList({ payload }: { payload: RenderPayload }) {
   );
 }
 
-function ProductRow({ product: p }: { product: PublicProduct }) {
-  const { bar } = ratios(p);
+function ProductRow({ product: p }: { product: Measured<PublicProduct> }) {
   const outOfStock = p.stock <= 0;
   const discontinued = p.status === "discontinued";
 
@@ -114,26 +96,81 @@ function ProductRow({ product: p }: { product: PublicProduct }) {
         )}
       </div>
 
-      {/* Line 2 — the measurement, and it is a fixed structure. The SKU absorbs
-          the slack on the left so the bar and the numbers stay in a hard column
-          that aligns across every row: the whole point of the list is comparing
-          those thirteen deficits down the page, and a column that shifts per
-          row cannot be compared. */}
+      {/* Line 2 — the measure, and it is a fixed structure. The SKU absorbs the
+          slack on the left so whatever the measure renders stays in a hard
+          column that aligns across every row: the whole point of the list is
+          comparing those values down the page, and a column that shifts per row
+          cannot be compared. */}
       <div className="mt-1 flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-3">{p.sku}</span>
-
-        {/* The relative deficit, made visual. Neutral on purpose. */}
-        <span
-          className="h-1 w-14 flex-none overflow-hidden rounded-full bg-sub"
-          role="img"
-          aria-label={`${p.stock} of ${p.reorderPoint} reorder point`}
-        >
-          <span className="block h-full rounded-full bg-ink-3" style={{ width: `${bar * 100}%` }} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-3">
+          {p.sku}
+          {p.measure.kind === "none" && (
+            // With no measure the row collapses to identity, and the space the
+            // column would have held goes to the one other fact worth having.
+            <span className="text-ink-3"> · {p.category}</span>
+          )}
         </span>
-        <span className="w-[56px] flex-none text-right font-mono text-[11.5px] text-ink-2">
-          <span className="text-ink">{p.stock}</span> / {p.reorderPoint}
-        </span>
+        <Measure measure={p.measure} />
       </div>
     </li>
   );
+}
+
+/**
+ * One switch, four branches, and no fallthrough: a kind the server can send is
+ * a kind that has a rendering. The bar exists in exactly one of them.
+ */
+function Measure({ measure }: { measure: RowMeasure }) {
+  switch (measure.kind) {
+    case "ratio": {
+      // Clamped for the FILL only — a stock above its reference is a full bar,
+      // not an overflowing one. The number beside it stays unclamped and true.
+      const fill = Math.min(Math.max(measure.value / (measure.reference || 1), 0), 1);
+      return (
+        <>
+          <span
+            className="h-1 w-14 flex-none overflow-hidden rounded-full bg-sub"
+            role="img"
+            aria-label={`${measure.value} of ${measure.reference}`}
+          >
+            <span className="block h-full rounded-full bg-ink-3" style={{ width: `${fill * 100}%` }} />
+          </span>
+          <span className="w-[56px] flex-none text-right font-mono text-[11.5px] text-ink-2">
+            <span className="text-ink">{measure.value}</span> / {measure.reference}
+          </span>
+        </>
+      );
+    }
+
+    case "magnitude":
+      // No bar: there is no reference to fill against. The threshold that
+      // defines the group is stated once, in the header, so the row carries the
+      // value alone instead of repeating "below 0" thirteen times.
+      return (
+        <span
+          className={`flex-none text-right font-mono text-[11.5px] ${
+            measure.sign === "negative" ? "text-error" : "text-ink"
+          }`}
+        >
+          {measure.value > 0 ? "+" : ""}
+          {measure.value.toFixed(1)}
+          {measure.unit}
+        </span>
+      );
+
+    case "recency":
+      // The distance is the measure; the date is the evidence for it, kept
+      // quiet so the column reads as one number down the page.
+      return (
+        <span className="flex-none whitespace-nowrap text-right text-[11.5px] text-ink-2">
+          ended {measure.endedDaysAgo}d ago{" "}
+          <span className="font-mono text-[10.5px] text-ink-3">{measure.date}</span>
+        </span>
+      );
+
+    case "none":
+      // Nothing measured, so nothing rendered and no reserved gap. A blank
+      // column would still be a promise of a number that is not coming.
+      return null;
+  }
 }
