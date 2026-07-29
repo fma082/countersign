@@ -41,6 +41,7 @@ import {
 } from "@/lib/scenario/catalog";
 import { effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
 import { subtitleIntent } from "./intent-subtitle";
+import { buildProviderTools, parseArgs, toolSpecs, type ParsedArgs } from "./tool-args";
 import type {
   GateItem,
   GatePreview,
@@ -331,139 +332,14 @@ const marginPatch = (skus: string[]): Record<string, number> => {
 const money = (n: number) => `$${n.toFixed(2)}`;
 
 // ── Provider tool schemas ──────────────────────────────────────────────────
-const selectorEnum = [...SELECTORS];
-
-export const TOOLS: ProviderTool[] = [
-  {
-    type: "function",
-    function: {
-      name: "query_products",
-      description:
-        "Count products by a business metric and show the matching rows to the human. Read-only. You get the count and the criterion back, not the rows — the rows are displayed directly.",
-      parameters: {
-        type: "object",
-        properties: {
-          metric: { type: "string", enum: [...METRICS] },
-          threshold: {
-            type: "number",
-            description:
-              "Required when metric is stock_below: the number from the question (\"less than 50 in stock\" → 50). Copy it; never round it, never supply one the human did not give.",
-          },
-        },
-        required: ["metric"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "inspect_product",
-      description:
-        "Look up ONE product by its sku and report its real status, stock, reorder point, margin, and sale. Read-only. Use this for any question about a single product (e.g. \"what is the status of NB-AU-1005?\") instead of a metric count.",
-      parameters: {
-        type: "object",
-        properties: {
-          sku: { type: "string", description: "The product SKU, e.g. NB-AU-1005." },
-        },
-        required: ["sku"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "filter_view",
-      description:
-        "Filter the product table to a metric so the human can see the rows. Read-only. Can reveal the hidden Margin column. You get the count and the criterion back, not the rows — the rows are displayed directly.",
-      parameters: {
-        type: "object",
-        properties: {
-          filter: { type: "string", enum: [...METRICS, "none"] },
-          threshold: {
-            type: "number",
-            description:
-              "Required when filter is stock_below: the number from the question. Copy it; never supply one the human did not give.",
-          },
-          reveal_margin: { type: "boolean" },
-        },
-        required: ["filter"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "update_price",
-      description:
-        "Set the regular price of ONE product (pass its sku). Reversible — runs immediately and can be undone until the next write.",
-      parameters: {
-        type: "object",
-        properties: {
-          sku: { type: "string", description: "The product SKU, e.g. NB-ST-6002." },
-          price: { type: "number" },
-        },
-        required: ["sku", "price"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "adjust_stock",
-      description:
-        "Set the stock level of ONE product (pass its sku). Reversible — runs immediately and can be undone until the next write.",
-      parameters: {
-        type: "object",
-        properties: {
-          sku: { type: "string" },
-          stock: { type: "number" },
-        },
-        required: ["sku", "stock"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "set_web_visible",
-      description:
-        "Set the web-store visibility of ONE product (pass its sku) to an EXPLICIT value. `visible` is required: true shows it, false hides it. There is no toggle — a call without an explicit direction is rejected, never guessed. Reversible. A `where` selector matching many products becomes a batch and requires approval.",
-      parameters: {
-        type: "object",
-        properties: {
-          sku: { type: "string" },
-          where: { type: "string", enum: selectorEnum },
-          visible: { type: "boolean", description: "Required. true = show, false = hide." },
-        },
-        required: ["visible"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "clear_expired_sales",
-      description:
-        "Remove the sale price from every product whose sale has ended. DESTRUCTIVE — requires human approval.",
-      parameters: { type: "object", properties: {} },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "discontinue_products",
-      description:
-        "Mark a set of products as discontinued (also hides them from the web store). DESTRUCTIVE — the status propagates downstream, so it requires human approval regardless of how many products match. Pass a `filter`.",
-      parameters: {
-        type: "object",
-        properties: {
-          filter: { type: "string", enum: selectorEnum },
-        },
-        required: ["filter"],
-      },
-    },
-  },
-];
+/**
+ * The specs, and the schemas generated from them. `TOOL_SPECS` is the single
+ * declaration: what the model is shown and what the server enforces are two
+ * views of this one object, so a schema cannot promise a contract the parser
+ * does not keep. See `tool-args.ts`.
+ */
+export const TOOL_SPECS = toolSpecs(METRICS, SELECTORS);
+export const TOOLS: ProviderTool[] = buildProviderTools(TOOL_SPECS);
 
 // ── Governance results ─────────────────────────────────────────────────────
 // Every non-gate decision carries a `ToolOutcome`: what the model gets, and
@@ -482,6 +358,19 @@ let gateSeq = 0;
 let actionSeq = 0;
 
 /**
+ * THE EDGE. Every tool call the model makes enters here and nowhere else, so
+ * this is where raw arguments stop being raw.
+ *
+ * `parseArgs` runs BEFORE the dispatch, and no tool body ever sees a
+ * `Record<string, unknown>` again. A body cannot re-derive a type, cannot
+ * accept an argument its tool never declared, and cannot fall back to a default
+ * for something that failed to parse — the value is either well-formed or the
+ * call never reached the body.
+ *
+ * The refusal keeps the RAW arguments in its event, deliberately. The badge
+ * says `invalid` and the disclosure shows what the model actually sent, not a
+ * cleaned-up version of it: the record is of the call that was made.
+ *
  * `turnMessage` is the human's message that triggered THIS turn, passed down by
  * the route. It is the only source of the read subtitle: the model has no say
  * in it and no argument to carry it in. See `cleanIntent`.
@@ -489,9 +378,13 @@ let actionSeq = 0;
 export function govern(
   id: string,
   name: string,
-  args: Record<string, unknown>,
+  rawArgs: Record<string, unknown>,
   turnMessage?: string,
 ): Governed {
+  const parsed = parseArgs(name, TOOL_SPECS, rawArgs);
+  if ("error" in parsed) return invalid(id, name, rawArgs, parsed.error);
+  const args = parsed.args;
+
   switch (name) {
     case "query_products":
       return governQuery(id, args, turnMessage);
@@ -509,7 +402,9 @@ export function govern(
     case "discontinue_products":
       return governDestructive(id, name, args);
     default:
-      return invalid(id, name, args, `Unknown tool "${name}".`);
+      // Unreachable: `parseArgs` refuses a name with no spec. Kept so adding a
+      // spec without a case here is a compile-time hole, not a silent one.
+      return invalid(id, name, rawArgs, `Unknown tool "${name}".`);
   }
 }
 
@@ -580,11 +475,7 @@ function cleanIntent(raw: unknown): string | undefined {
  * The subtitle's TEXT is the turn's own message, never `args` — the model does
  * not choose which question gets attributed to the human.
  */
-function governQuery(
-  id: string,
-  args: Record<string, unknown>,
-  turnMessage?: string,
-): Governed {
+function governQuery(id: string, args: ParsedArgs, turnMessage?: string): Governed {
   if (!isMetric(args.metric))
     return invalid(id, "query_products", args, `Unknown metric "${String(args.metric)}".`);
   const read = readMetric(args.metric, args.threshold);
@@ -634,7 +525,7 @@ function governQuery(
  * narrates fact instead of improvising a per-SKU claim from an unrelated count.
  * Margin reaches the client only here, deliberately, and cost is never included.
  */
-function governInspect(id: string, args: Record<string, unknown>): Governed {
+function governInspect(id: string, args: ParsedArgs): Governed {
   const sku = typeof args.sku === "string" ? args.sku.trim() : "";
   const p = sku ? findProduct(sku) : undefined;
   if (!p)
@@ -679,11 +570,7 @@ function governInspect(id: string, args: Record<string, unknown>): Governed {
  * split closed for `query_products`, still open here because the label was
  * missing. So the label ships, the SKUs do not, and the rows go to the client.
  */
-function governFilter(
-  id: string,
-  args: Record<string, unknown>,
-  turnMessage?: string,
-): Governed {
+function governFilter(id: string, args: ParsedArgs, turnMessage?: string): Governed {
   const filter = args.filter;
   const revealMargin = args.reveal_margin === true;
 
@@ -741,17 +628,41 @@ function governFilter(
 }
 
 // ── Reversible field writes (radius decides the tier) ─────────────────────
-function resolveTargets(args: Record<string, unknown>): { rows: Product[]; error?: string } {
-  const skuRaw = typeof args.sku === "string" ? args.sku.trim() : "";
-  const where = typeof args.where === "string" ? args.where.trim() : "";
-  // Small models often fill an unused `sku` with a placeholder ("none", "all").
-  // A real SKU wins; a junk one is ignored in favour of a `where` selector.
+/**
+ * WHO a write touches. The one question a write must never get wrong, so it
+ * fails on ambiguity instead of resolving through it.
+ *
+ * This used to degrade: a `sku` that did not resolve fell through to `where`
+ * and the write executed on the SELECTOR's rows instead. With `on_sale`
+ * matching exactly one product in this catalog, that was a radius-1 write —
+ * immediate, ungated, badged `ok`, on a product the model had not named. A
+ * mistyped SKU did not produce an error; it produced a change somewhere else.
+ *
+ * Two rules now:
+ *   - A `sku` that does not resolve is an ERROR. Always. There is no second
+ *     target to fall back to, because a fallback target is a guess.
+ *   - A real `sku` AND a `where` together is a REFUSAL. They are two different
+ *     answers to "which products", and picking one by precedence is the server
+ *     deciding what the model meant. Cheaper to ask again.
+ *
+ * The placeholder guard stays: a model filling an unused `sku` with "none" or
+ * "all" is a shape slip, not a second target, so it is read as absent — the
+ * same stance `set_web_visible` takes on a missing direction.
+ */
+function resolveTargets(args: ParsedArgs): { rows: Product[]; error?: string } {
+  const skuRaw = typeof args.sku === "string" ? args.sku : "";
+  const where = typeof args.where === "string" ? args.where : "";
   const sku = skuRaw && !["none", "all", "null", "any"].includes(skuRaw.toLowerCase()) ? skuRaw : "";
+
+  if (sku && where)
+    return {
+      rows: [],
+      error: `Two targets: sku "${sku}" and where "${where}". Pass one — refusing to guess which set you meant.`,
+    };
 
   if (sku) {
     const p = findProduct(sku);
-    if (p) return { rows: [p] };
-    if (!where) return { rows: [], error: `No product with SKU "${sku}".` };
+    return p ? { rows: [p] } : { rows: [], error: `No product with SKU "${sku}".` };
   }
   if (where) {
     const sel = resolveSelector(where);
@@ -764,7 +675,7 @@ function governFieldWrite(
   id: string,
   tool: string,
   field: WriteField,
-  args: Record<string, unknown>,
+  args: ParsedArgs,
 ): Governed {
   const { rows, error } = resolveTargets(args);
   if (error) return invalid(id, tool, args, error);
@@ -807,7 +718,7 @@ function governFieldWrite(
 }
 
 // ── Destructive gates ──────────────────────────────────────────────────────
-function governDestructive(id: string, tool: string, args: Record<string, unknown>): Governed {
+function governDestructive(id: string, tool: string, args: ParsedArgs): Governed {
   const plan = tool === "clear_expired_sales" ? planClear() : planDiscontinue(args);
   if ("error" in plan) return invalid(id, tool, args, plan.error);
   if (plan.targetIds.length === 0) return invalid(id, tool, args, "Nothing matches — nothing to do.");
@@ -848,7 +759,7 @@ function planClear(): Plan {
   };
 }
 
-function planDiscontinue(args: Record<string, unknown>): Plan | { error: string } {
+function planDiscontinue(args: ParsedArgs): Plan | { error: string } {
   const where = typeof args.filter === "string" ? args.filter : "";
   const sel = resolveSelector(where);
   if (!sel) return { error: `Unknown filter "${String(args.filter)}".` };
@@ -897,7 +808,7 @@ function planFieldBatch(tool: string, field: WriteField, value: number | boolean
 function gateFrom(
   id: string,
   tool: string,
-  args: Record<string, unknown>,
+  args: ParsedArgs,
   plan: Plan,
   pendingSummary: string,
 ): Governed {
@@ -917,19 +828,50 @@ function gateFrom(
   };
 }
 
-/** Re-plan for a stored gate, intersect with the human's exclusions, execute. */
+/**
+ * Re-plan for a stored gate, intersect with the human's exclusions, execute.
+ *
+ * The stored `args` are the model's RAW arguments, so they are re-parsed here
+ * rather than trusted: approval is a second execution point, and an execution
+ * point that skipped the edge would be a way around it. The parse is
+ * deterministic, so a gate that was offered still approves — but the path
+ * cannot be entered with anything the edge would have refused.
+ *
+ * A refusal REFUSES. It used to be impossible for the re-plan to fail (govern
+ * validates before storing the gate), and the code said so by defaulting a
+ * failed value to `0` — which, had it ever been reachable, would have set the
+ * price of every approved product to zero, silently, on the human's own click.
+ * "Can't happen" is not a reason to write the dangerous branch.
+ */
 export function executeGate(
   callId: string,
   tool: string,
   args: Record<string, unknown>,
   excludedIds: string[],
-): { event: ToolEvent; effect: ViewEffect; outcome: ToolOutcome } {
+):
+  | { kind: "ran"; event: ToolEvent; effect: ViewEffect; outcome: ToolOutcome }
+  | { kind: "refused"; event: ToolEvent } {
+  const parsedArgs = parseArgs(tool, TOOL_SPECS, args);
+  if ("error" in parsedArgs)
+    return {
+      kind: "refused",
+      event: mk(callId, tool, "invalid", "invalid", parsedArgs.error, args, []),
+    };
+
   const plan =
     tool === "clear_expired_sales"
       ? planClear()
       : tool === "discontinue_products"
-        ? (planDiscontinue(args) as Plan)
-        : replanFieldBatch(tool, args);
+        ? planDiscontinue(parsedArgs.args)
+        : replanFieldBatch(tool, parsedArgs.args);
+
+  // `planDiscontinue` and `replanFieldBatch` both carry a real error branch.
+  // The union is honoured instead of cast away.
+  if ("error" in plan)
+    return {
+      kind: "refused",
+      event: mk(callId, tool, "invalid", "invalid", plan.error, args, []),
+    };
 
   // The client can only SHRINK the server's own preview. An excluded ID that
   // was never in the preview is meaningless and dropped.
@@ -941,8 +883,9 @@ export function executeGate(
   const { mutations, okSummary } = plan.execute(allowed);
   const suffix = excluded.length ? ` ${excluded.length} excluded by you.` : "";
   return {
+    kind: "ran",
     event: {
-      ...mk(callId, tool, "gate", "ok", okSummary + suffix, args, allowed),
+      ...mk(callId, tool, "gate", "ok", okSummary + suffix, parsedArgs.args, allowed),
       excluded,
     },
     effect: { mutations, filter: { skus: null }, margins: marginPatch(allowed) },
@@ -950,15 +893,65 @@ export function executeGate(
   };
 }
 
-function replanFieldBatch(tool: string, args: Record<string, unknown>): Plan {
+function replanFieldBatch(tool: string, args: ParsedArgs): Plan | { error: string } {
   const field: WriteField = tool === "update_price" ? "price" : tool === "adjust_stock" ? "stock" : "webVisible";
-  const { rows } = resolveTargets(args);
+  const { rows, error } = resolveTargets(args);
+  if (error) return { error };
   const parsed = writeValue(tool, args);
-  const value = "value" in parsed ? parsed.value : field === "webVisible" ? false : 0;
-  return planFieldBatch(tool, field, value, rows);
+  if ("error" in parsed) return parsed;
+  return planFieldBatch(tool, field, parsed.value, rows);
 }
 
 // ── Undo (human-only, still server-resolved) ────────────────────────────────
+/**
+ * The undo spec, validated before it can touch anything.
+ *
+ * `body.undo` arrives from the client and was cast straight to `UndoSpec` — a
+ * compile-time claim about a runtime value, which is the same mistake as
+ * trusting a tool schema. It was the least guarded write in the system: `field`
+ * is typed to three names but nothing checked it, and `setField`'s ternary
+ * sends anything unrecognised to the `webVisible` branch, so an unknown field
+ * wrote `webVisible = { … }` and reported `undone`. Worse with a known field
+ * and a bad value: `{ field: "price", from: "free" }` assigned the string into
+ * the catalog and only THEN threw formatting the summary — the mutation landed,
+ * and the human was shown a generic engine failure that named nothing.
+ *
+ * So the value is checked against the field it claims to restore, before any
+ * write. An undo is the one operation whose whole promise is putting things
+ * back; it cannot be the way something breaks.
+ */
+export function parseUndo(raw: unknown): UndoSpec | { error: string } {
+  if (!raw || typeof raw !== "object") return { error: "Nothing to undo." };
+  const u = raw as Record<string, unknown>;
+
+  const sku = typeof u.sku === "string" ? u.sku.trim() : "";
+  const product = sku ? findProduct(sku) : undefined;
+  if (!product) return { error: `Cannot undo — no product with SKU "${sku}".` };
+
+  const field = u.field;
+  if (field !== "price" && field !== "stock" && field !== "webVisible")
+    return { error: `Cannot undo — "${String(field)}" is not a writable field.` };
+
+  // The value must fit the field, both for the restore and for the staleness
+  // check that compares `to` against what is on the record now.
+  const fits = (v: unknown): boolean =>
+    field === "webVisible"
+      ? typeof v === "boolean"
+      : typeof v === "number" && Number.isFinite(v) && v >= 0 && (field !== "stock" || Number.isInteger(v));
+  if (!fits(u.from) || !fits(u.to))
+    return { error: `Cannot undo — ${field} values must be ${field === "webVisible" ? "true or false" : "numbers"}.` };
+
+  return {
+    actionId: typeof u.actionId === "string" ? u.actionId : "",
+    tool: typeof u.tool === "string" ? u.tool : "update_price",
+    sku: product.sku,
+    name: product.name, // from the record, not from the client
+    field,
+    from: u.from as number | boolean,
+    to: u.to as number | boolean,
+  };
+}
+
 export function executeUndo(
   callId: string,
   spec: UndoSpec,
@@ -987,28 +980,24 @@ export function executeUndo(
 }
 
 // ── value + formatting helpers ──────────────────────────────────────────────
+/**
+ * WHAT a write sets. Range and type are already settled — the spec declares
+ * `price` as a number above 0 and `stock` as a whole number at or above 0, and
+ * nothing that failed those reached this function. What is left is the domain
+ * shaping the spec cannot express: money rounds to cents.
+ *
+ * `set_web_visible` keeps its refusal for the case the spec cannot see either —
+ * a value that parsed as a boolean is a direction, but the ARGUMENT missing
+ * entirely is the one the model kept producing, and that message is authored
+ * for it (`refusal` on the spec carries the same sentence).
+ */
 function writeValue(
   tool: string,
-  args: Record<string, unknown>,
+  args: ParsedArgs,
 ): { value: number | boolean } | { error: string } {
-  if (tool === "update_price") {
-    const n = Number(args.price);
-    if (!Number.isFinite(n) || n <= 0) return { error: `Invalid price "${String(args.price)}".` };
-    return { value: Math.round(n * 100) / 100 };
-  }
-  if (tool === "adjust_stock") {
-    const n = Number(args.stock);
-    if (!Number.isInteger(n) || n < 0) return { error: `Invalid stock "${String(args.stock)}".` };
-    return { value: n };
-  }
-  // set_web_visible: the direction is MANDATORY and EXPLICIT. A boolean (or its
-  // clear string form) is honoured; anything else — omitted, a number, a vague
-  // string — is refused. We never infer and never flip the current state. A
-  // write without a direction does not execute. ("toggle" invited exactly the
-  // ambiguity a small model then exposed; "set" + required arg closes it.)
+  if (tool === "update_price") return { value: Math.round((args.price as number) * 100) / 100 };
+  if (tool === "adjust_stock") return { value: args.stock as number };
   if (typeof args.visible === "boolean") return { value: args.visible };
-  if (args.visible === "true") return { value: true };
-  if (args.visible === "false") return { value: false };
   return {
     error:
       "set_web_visible needs an explicit visible: true or false. It was omitted or unclear — refusing to guess a direction.",
@@ -1043,7 +1032,7 @@ function mk(
   decision: ToolEvent["decision"],
   badge: ToolEvent["badge"],
   summary: string,
-  args: Record<string, unknown>,
+  args: ParsedArgs | Record<string, unknown>,
   targetIds: string[],
 ): ToolEvent {
   return { id, name, decision, badge, summary, args, targetIds };

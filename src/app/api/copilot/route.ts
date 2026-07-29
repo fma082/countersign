@@ -15,7 +15,7 @@
  */
 
 import { streamChatResilient } from "@/lib/engine/resilient";
-import { govern, executeGate, executeUndo, METRIC_SPEC, TOOLS } from "@/lib/engine/tools";
+import { govern, executeGate, executeUndo, parseUndo, METRIC_SPEC, TOOLS } from "@/lib/engine/tools";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
 import { rateLimit, clientIp } from "@/lib/engine/rate-limit";
 import { resetCatalog } from "@/lib/scenario/catalog";
@@ -417,8 +417,20 @@ async function runGateDecision(body: Body, emit: Emit): Promise<void> {
     emit({ type: "error", message: "That approval has expired. Ask for the change again." });
     return;
   }
-  const excluded = Array.isArray(body.excludedIds) ? body.excludedIds : [];
+  // Elements are filtered to strings, not just the array checked: a non-string
+  // never matches a SKU in the server's preview, so it would silently widen the
+  // approved set instead of narrowing it — the wrong direction to fail in.
+  const excluded = Array.isArray(body.excludedIds)
+    ? body.excludedIds.filter((id): id is string => typeof id === "string")
+    : [];
   const result = executeGate("call_gate", stored.tool, stored.args, excluded);
+  if (result.kind === "refused") {
+    // The stored call no longer parses. It does not run, and it does not run
+    // with a substituted value either — the badge says `invalid` and says why.
+    emit({ type: "tool", event: result.event });
+    emit({ type: "done" });
+    return;
+  }
   emit({ type: "tool", event: result.event });
   emit({ type: "effect", effect: result.effect });
   // One gate, one outcome — the single-render rule is satisfied by construction.
@@ -432,13 +444,17 @@ async function runGateDecision(body: Body, emit: Emit): Promise<void> {
 /** Reverse a reversible write. Human-only signal. Still server-resolved: a
  *  stale target (value drifted) is surfaced, not overwritten blindly. */
 async function runUndo(body: Body, emit: Emit): Promise<void> {
-  if (!body.undo) {
-    emit({ type: "error", message: "Nothing to undo." });
+  // Validated against the catalog before it can restore anything — the client
+  // names the target, the server decides whether that target is writable and
+  // whether the value fits the field. See `parseUndo`.
+  const spec = parseUndo(body.undo);
+  if ("error" in spec) {
+    emit({ type: "error", message: spec.error });
     return;
   }
-  const r = executeUndo("call_undo", body.undo, body.force === true);
+  const r = executeUndo("call_undo", spec, body.force === true);
   if (r.kind === "stale") {
-    emit({ type: "staleUndo", stale: { spec: body.undo, field: r.field, expected: r.expected, actual: r.actual } });
+    emit({ type: "staleUndo", stale: { spec, field: r.field, expected: r.expected, actual: r.actual } });
     emit({ type: "done" });
     return;
   }
