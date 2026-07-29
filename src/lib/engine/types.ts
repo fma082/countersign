@@ -206,6 +206,54 @@ export type MeasureKind = RowMeasure["kind"];
 /** A row shipped to the client with its measure already resolved. */
 export type Measured<T> = T & { measure: RowMeasure };
 
+/**
+ * WHY a field has no value — and there are two reasons, which are not the same
+ * reason and must not look the same on screen.
+ *
+ *   present         the field has a value.
+ *   not-applicable  the field does not exist for this product. A product with
+ *                   no sale has no sale price: there is no question to answer,
+ *                   so the row is NOT RENDERED. Printing the label with a dash
+ *                   would invent an absence — it says "this should have a value
+ *                   and does not", about a field that was never going to.
+ *   missing         the field applies and did not arrive. The row IS RENDERED,
+ *                   and says so in words. A dash reads as the agent being
+ *                   careless; "not available" reads as the system telling you
+ *                   what it does not know.
+ *
+ * THE SERVER DECIDES WHICH. This is the same rule as everywhere else here: the
+ * component cannot tell the two apart from the data, because both arrive as
+ * "no value". Only the code that knows the product's shape knows whether the
+ * field was ever going to have one.
+ *
+ * Generative UI usually collapses this into one empty state, and the collapse
+ * is what makes an agent's output feel unreliable: a human cannot tell a fact
+ * that does not exist from a fact the system lost.
+ */
+export type FieldState = "present" | "not-applicable" | "missing";
+
+/** One label/value row of a `product_detail`, already formatted server-side. */
+export interface DetailField {
+  key: string;
+  label: string;
+  state: FieldState;
+  /** Present only when `state` is "present". The client prints it verbatim. */
+  value?: string;
+}
+
+/**
+ * The record of ONE product, as `inspect_product` resolved it. Every value is
+ * a string the server already formatted — a margin is "28.9%" here, never a
+ * number for the client to unit-guess and never one for the model to narrate.
+ */
+export interface ProductDetail {
+  sku: string;
+  name: string;
+  category: string;
+  status: "active" | "discontinued";
+  fields: DetailField[];
+}
+
 /** A row patch the client applies to the table. Only the changed fields appear. */
 export interface RowMutation {
   sku: string;

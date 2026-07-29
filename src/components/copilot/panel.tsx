@@ -9,6 +9,7 @@ import { RichText } from "./guided";
 import { StatusBadge } from "./status-badge";
 import { ToolCard } from "./tool-card";
 import { GateCard } from "./gate-card";
+import { ProductDetail } from "./product-detail";
 import { ProductList } from "./product-list";
 import { Composer } from "./composer";
 import { ResponseError, ResponsePaused, ResponseRateLimit, ThinkingDots } from "./response-loading";
@@ -93,9 +94,20 @@ export function CopilotPanel({
               // Generative UI: the resolved rows, rendered where they landed in
               // the turn. The model's prose stays — they are two halves of one
               // answer, not alternatives.
-              return item.render.component === "product_list" ? (
-                <ProductList key={item.id} payload={item.render} />
-              ) : null;
+              //
+              // The vocabulary is closed on purpose. A `component` the client
+              // does not know renders NOTHING rather than guessing a fallback:
+              // a payload shaped for a component that does not exist here is a
+              // server/client version skew, and half-drawing it would put a
+              // partial record on screen with the same authority as a whole one.
+              switch (item.render.component) {
+                case "product_list":
+                  return <ProductList key={item.id} payload={item.render} />;
+                case "product_detail":
+                  return <ProductDetail key={item.id} payload={item.render} />;
+                default:
+                  return null;
+              }
             case "note":
               return (
                 <p

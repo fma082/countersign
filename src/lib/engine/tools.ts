@@ -43,10 +43,12 @@ import { effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-pro
 import { subtitleIntent } from "./intent-subtitle";
 import { buildProviderTools, parseArgs, toolSpecs, type ParsedArgs } from "./tool-args";
 import type {
+  DetailField,
   GateItem,
   GatePreview,
   Measured,
   MeasureKind,
+  ProductDetail,
   ProviderTool,
   RowMeasure,
   RowMutation,
@@ -519,42 +521,122 @@ function governQuery(id: string, args: ParsedArgs, turnMessage?: string): Govern
   };
 }
 
+// ── The single-product record ──────────────────────────────────────────────
+const field = (key: string, label: string, value: string): DetailField => ({
+  key,
+  label,
+  state: "present",
+  value,
+});
+const notApplicable = (key: string, label: string): DetailField => ({ key, label, state: "not-applicable" });
+const missing = (key: string, label: string): DetailField => ({ key, label, state: "missing" });
+
 /**
- * Read a single product by sku. Safe — runs on its own. The answer is resolved
- * from the SKU's real record (status, stock, reorder, margin, sale), so the model
- * narrates fact instead of improvising a per-SKU claim from an unrelated count.
- * Margin reaches the client only here, deliberately, and cost is never included.
+ * One product's record, each field CLASSIFIED, each value already formatted.
+ *
+ * Both decisions belong here rather than in the component, for the same reason:
+ * the component cannot make them correctly. It cannot tell "this product has no
+ * sale" from "this product's sale price did not arrive" — both are the absence
+ * of a number — and it cannot know that `28.9` is a percentage rather than an
+ * amount of money. That second one is not hypothetical: the model, handed the
+ * bare number, reported a 28.9% margin as "$28.90". A consumer that receives a
+ * quantity without its unit will eventually pick the wrong one.
+ *
+ * So `margin` leaves here as the string "28.9%" and never as 28.9. See
+ * `FieldState` for the two-kinds-of-absent rule this table applies.
+ *
+ * Every `not-applicable` field is still SHIPPED, not dropped. The frame is the
+ * record of what the server decided about each field, and "decided this one
+ * does not apply" is a decision. The component drops the row; the payload keeps
+ * the reasoning.
+ */
+function productDetail(p: Product): ProductDetail {
+  const onSale = p.salePrice !== null;
+  const m = marginPct(p);
+
+  return {
+    sku: p.sku,
+    name: p.name,
+    category: p.category,
+    status: p.status,
+    fields: [
+      field("price", "Price", money(p.price)),
+
+      // NOT-APPLICABLE, not missing: a product without a sale is not a product
+      // whose sale price went astray. There is nothing to report, so the row
+      // does not exist — 23 of the 30 products in this catalog are in this case,
+      // and a dash on each would be 23 invented gaps.
+      onSale ? field("salePrice", "Sale price", money(p.salePrice as number)) : notApplicable("salePrice", "Sale price"),
+
+      // The end date follows the sale's existence, then splits: with a sale but
+      // no date, the field APPLIES and is absent — a real `missing`, and the one
+      // this catalog's shape allows.
+      !onSale
+        ? notApplicable("saleEnds", "Sale ends")
+        : p.saleEnds
+          ? field("saleEnds", "Sale ends", p.saleEnds)
+          : missing("saleEnds", "Sale ends"),
+
+      // Margin is derived from cost, so it exists whenever cost and an
+      // effective price do. When it cannot be computed it is MISSING, never a
+      // zero and never omitted: the row stays and says the number is not
+      // available, because a margin the human silently does not see is the same
+      // as a margin they assume is fine.
+      Number.isFinite(m) ? field("margin", "Margin", `${Math.round(m * 10) / 10}%`) : missing("margin", "Margin"),
+
+      field("stock", "Stock / reorder", `${p.stock} / ${p.reorderPoint}`),
+      field("status", "Status", p.status),
+      field("webVisible", "Web store", p.webVisible ? "yes" : "no"),
+      field("lastUpdated", "Last updated", p.lastUpdated),
+    ],
+  };
+}
+
+/**
+ * Read a single product by sku. Safe — runs on its own.
+ *
+ * Split across the same two channels as `governQuery`, and for a sharper
+ * version of the same reason. This tool used to hand the model eleven raw
+ * fields and ask it to narrate them; it narrated `margin: 28.9` as "$28.90" —
+ * a percentage restated as an amount of money, about the one number in this
+ * system the human is least able to check. Nothing in the prose said which it
+ * was, and there was no second surface to contradict it.
+ *
+ * Now the record goes to the client, already formatted and already classified,
+ * and the model gets the product's IDENTITY and nothing to quantify. It cannot
+ * misreport a margin it was not given. If it invents one anyway, the correct
+ * value is on screen beside the sentence — the failure becomes visible instead
+ * of authoritative.
+ *
+ * Margin reaches the client only here and in a margin-revealing filter,
+ * deliberately. `cost` still never leaves the server: what ships is the
+ * percentage, not the number it was derived from.
  */
 function governInspect(id: string, args: ParsedArgs): Governed {
-  const sku = typeof args.sku === "string" ? args.sku.trim() : "";
+  const sku = typeof args.sku === "string" ? args.sku : "";
   const p = sku ? findProduct(sku) : undefined;
   if (!p)
     return invalid(id, "inspect_product", args, sku ? `No product with SKU "${sku}".` : "Pass a sku to inspect.");
 
-  const margin = Math.round(marginPct(p) * 10) / 10;
-  const belowReorder = p.stock < p.reorderPoint;
-  const onSale = p.salePrice !== null;
-  const summary =
-    `${p.name} (${p.sku}) — ${p.status}, ${p.stock} in stock` +
-    `${belowReorder ? " (below reorder)" : ""}, margin ${margin}%` +
-    `${onSale ? `, on sale at ${money(p.salePrice as number)}` : ""}.`;
+  const detail = productDetail(p);
   return {
     kind: "safe",
-    event: mk(id, "inspect_product", "safe", "ok", summary, args, [p.sku]),
+    // The tool card stays a log line: what ran, on what. The record itself is
+    // the card below it, so the summary does not restate the numbers.
+    event: mk(id, "inspect_product", "safe", "ok", `${p.name} (${p.sku}) — ${p.status}.`, args, [p.sku]),
     effect: {},
-    outcome: modelOnly({
-      sku: p.sku,
-      name: p.name,
-      status: p.status,
-      stock: p.stock,
-      reorderPoint: p.reorderPoint,
-      belowReorder,
-      margin,
-      onSale,
-      salePrice: p.salePrice,
-      saleEnds: p.saleEnds,
-      price: p.price,
-    }),
+    outcome: {
+      // Identity only. No price, no stock, no margin — the model has nothing to
+      // convert into the wrong unit, and `rendered` tells it the record is
+      // already on screen so it writes context rather than a list.
+      modelPayload: { sku: p.sku, name: p.name, status: p.status, rendered: true },
+      renderPayload: {
+        component: "product_detail",
+        count: 1,
+        criterionLabel: `the stored record for ${p.sku}`,
+        data: detail,
+      },
+    },
   };
 }
 

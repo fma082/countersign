@@ -83,8 +83,13 @@ export function toolSpecs(metrics: readonly string[], selectors: readonly string
     },
 
     inspect_product: {
+      // The description promises exactly what comes back and no more. It used
+      // to say "report its stock, reorder point, margin and sale" — and the
+      // tool did hand all of that over, which is how a 28.9% margin came back
+      // narrated as "$28.90". The record is shown to the human directly now,
+      // so the model is told it gets the identity and not the numbers.
       description:
-        "Look up ONE product by its sku and report its real status, stock, reorder point, margin, and sale. Read-only. Use this for any question about a single product (e.g. \"what is the status of NB-AU-1005?\") instead of a metric count.",
+        "Look up ONE product by its sku and show the human its full record — price, stock, sale, margin, status. Read-only. You get the product's identity back, not its numbers: the record is displayed directly. Use this for any question about a single product (e.g. \"what is the status of NB-AU-1005?\") instead of a metric count.",
       args: {
         sku: { kind: "string", required: true, description: "The product SKU, e.g. NB-AU-1005." },
       },

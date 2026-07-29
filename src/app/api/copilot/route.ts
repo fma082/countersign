@@ -67,7 +67,7 @@ Reads (run on their own):
 ${METRIC_VOCABULARY}
   Match the user's words to the metric whose meaning above covers them, and pick that metric only. "How many active products?" → active (STATUS), never on_sale.
   THE STOCK AXIS HAS TWO METRICS AND THEY ARE NOT INTERCHANGEABLE. A question naming a NUMBER of units is stock_below, and you must pass that number as threshold: "less than 50 in stock", "under 50 units", "stock below 50", "menos de 50 en stock", "con menos de 50 unidades" → stock_below with threshold: 50. Only a question with NO number — "running low", "which need reordering", "below the reorder point", "hay que reponer" — is below_reorder. Never answer a numbered question with below_reorder: it compares each product to its own reorder point, so it does not contain the user's number at all.
-- inspect_product(sku): the real status/stock/reorder/margin/sale of ONE product. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?").
+- inspect_product(sku): show the human ONE product's full record. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?"). You get its name, sku and status — never its price, stock or margin, because the record is already on screen. Write one sentence of context and NEVER state a number you were not given.
 - filter_view(filter, reveal_margin?): filter the table; filter ∈ those metrics or "none".
 
 Reversible writes (run immediately, one product, undoable):
