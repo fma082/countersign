@@ -130,6 +130,13 @@ export function filterEffect(state: FilterState): ViewEffect {
     ...(reveal
       ? { reveal: ["margin"] as ColumnKey[], margins: marginsFor(filterProducts(state)) }
       : {}),
+    // Clearing the filter removes the question the column answered. Switching to
+    // a DIFFERENT criterion does not: `expired_sale` still overlaps the rows
+    // whose margin was revealed, and the margins already on the client stay true
+    // for them. What cannot happen either way is re-broadcasting margins for the
+    // new criterion's rows — margin ships only under a criterion that is about
+    // margin, or the whole cost table falls out of enough filter changes.
+    ...(state.kind === "none" ? { conceal: ["margin"] as ColumnKey[] } : {}),
   };
 }
 

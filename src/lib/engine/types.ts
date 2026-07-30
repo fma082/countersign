@@ -366,6 +366,15 @@ export interface ViewEffect {
   filter?: ResolvedFilter;
   /** Columns to reveal (additive). */
   reveal?: ColumnKey[];
+  /**
+   * Columns to hide again. Server-authored, because WHICH criterion earns a
+   * column is a governance rule and not a display preference: Margin exists
+   * because a criterion asked about margin, so clearing the filter takes the
+   * question away and the column with it. Left revealed over no criterion at
+   * all, it would print a dash on every row the reveal never covered — a column
+   * promising numbers it is not going to deliver.
+   */
+  conceal?: ColumnKey[];
   /** Margin values by SKU — the only channel by which margin reaches the client. */
   margins?: Record<string, number>;
   /** Row changes applied after an approved destructive op. */

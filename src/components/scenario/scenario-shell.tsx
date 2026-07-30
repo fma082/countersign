@@ -5,12 +5,14 @@ import { MessageSquare, X } from "lucide-react";
 import type { PublicProduct } from "@/lib/scenario/catalog";
 import type { ColumnKey, FilterState, ResolvedFilter, ViewEffect } from "@/lib/engine/types";
 import { NavRail } from "@/components/nav-rail";
+import { FilterBar } from "@/components/filter-bar";
 import { ProductTable, type TableView } from "@/components/product-table";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { CopilotPanel } from "@/components/copilot/panel";
 import { GuidedSteps } from "@/components/copilot/guided";
 import { useCopilot, type CopilotCallbacks } from "@/components/copilot/use-copilot";
 import { GUIDED_CLOSING, GUIDED_STEPS } from "@/lib/scenario/guided-steps";
+import { isBusy, isGateOpen } from "@/lib/copilot-statechart";
 import { cn } from "@/lib/cn";
 
 const LOCKED_PLACEHOLDER = "Complete the steps above to unlock free input.";
@@ -56,10 +58,11 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     // chip, and the state goes back to the server on the next request — three
     // uses, none of which involves interpreting the criterion.
     if (effect.filter !== undefined) setFilter(effect.filter);
-    if (effect.reveal?.length) {
+    if (effect.reveal?.length || effect.conceal?.length) {
       setReveal((prev) => {
         const next = new Set(prev);
-        for (const c of effect.reveal!) next.add(c);
+        for (const c of effect.reveal ?? []) next.add(c);
+        for (const c of effect.conceal ?? []) next.delete(c);
         return next;
       });
     }
@@ -199,6 +202,9 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
   // of them is a fact the resolver reported and the other is a length the client
   // measured — and the readout has to say what the resolver said.
   const shownCount = filter?.count ?? rows.length;
+  // The view is not the human's to move while a turn is resolving one, or while
+  // a gate is holding every target on screen for them to look at.
+  const busy = isBusy(status) || isGateOpen(status);
 
   return (
     <div className="grid h-dvh grid-cols-1 overflow-hidden lg:grid-cols-[56px_minmax(0,1fr)_380px]">
@@ -218,11 +224,9 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
               </h1>
             </div>
             <div className="flex items-center gap-2">
-              {view.revealMargin && (
-                <span className="rounded-full border border-line px-2.5 py-0.5 text-[11px] text-ink-2">
-                  Margin
-                </span>
-              )}
+              {/* The Margin pill lives in the filter bar now, next to its ✕. It
+                  was here, inert, announcing a column the human had no way to
+                  turn off — the same shape as a filter with no clear control. */}
               <span className="hidden text-[11px] text-ink-3 sm:inline">
                 {shownCount} of {rows.length}
               </span>
@@ -230,6 +234,21 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
             </div>
           </div>
         </header>
+        {/* Between the header and the scroll container, so it never competes
+            with the table's sticky thead. */}
+        <FilterBar
+          filter={filter}
+          revealMargin={view.revealMargin}
+          onApply={copilot.applyFilter}
+          onHideMargin={() =>
+            setReveal((prev) => {
+              const next = new Set(prev);
+              next.delete("margin");
+              return next;
+            })
+          }
+          disabled={busy}
+        />
         <ProductTable rows={rows} view={view} />
       </main>
 

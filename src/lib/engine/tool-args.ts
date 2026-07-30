@@ -75,8 +75,13 @@ export function toolSpecs(
 ): Record<string, ToolSpec> {
   return {
     query_products: {
+      // "show the matching rows to the human" used to be in this sentence, and
+      // it collided head-on with `filter_view`: showing rows is exactly what a
+      // human means by "filter the table", so a message that asked a question
+      // AND asked to filter resolved here, and the table never moved. The two
+      // descriptions now name the surface each one writes to.
       description:
-        "Count products by a business metric and show the matching rows to the human. Read-only. You get the count and the criterion back, not the rows — the rows are displayed directly.",
+        "ANSWER a how-many / list question about a named group. Returns the count and lists the matching rows in the CHAT PANEL. Read-only, and it does NOT change what the product table is showing — use filter_view or filter_compare for that. You get the count and the criterion back, not the rows: the rows are displayed directly.",
       args: {
         metric: { kind: "enum", values: metrics, required: true },
         threshold: {
@@ -114,7 +119,7 @@ export function toolSpecs(
     // filter the model can apply that the bar cannot show and clear.
     filter_view: {
       description:
-        "Filter the product table to a named group, so the human sees those rows and nothing else. Read-only. Pass preset: \"none\" to clear the filter and show all products. Use this for a group with a NAME; use filter_compare for a threshold on a number. You get the count and the criterion back, not the rows — the rows are displayed directly.",
+        "CHANGE WHAT THE PRODUCT TABLE SHOWS: narrow it to a named group, so the human sees those rows and nothing else. Use this whenever the human asks to filter, narrow, or show only a group — including when the same message also asks a question. Read-only. Pass preset: \"none\" to clear the filter and show all products. Use filter_compare instead for a threshold on a number. You get the count and the criterion back, not the rows.",
       args: {
         preset: { kind: "enum", values: [...presets, "none"], required: true },
       },
@@ -122,7 +127,7 @@ export function toolSpecs(
 
     filter_compare: {
       description:
-        "Filter the product table by comparing ONE field against ONE number — use this for any question that names a quantity (\"less than 50 in stock\", \"under $20\", \"exactly 0 in stock\"). Read-only. Copy the number from the question; never supply one the human did not give. To clear the filter, call filter_view with preset: \"none\".",
+        "CHANGE WHAT THE PRODUCT TABLE SHOWS by comparing ONE field against ONE number — use this for any request that names a quantity (\"less than 50 in stock\", \"under $20\", \"exactly 0 in stock\"). Read-only. Copy the number from the question; never supply one the human did not give. To clear the filter, call filter_view with preset: \"none\".",
       args: {
         field: {
           kind: "enum",
@@ -315,6 +320,30 @@ function parseOne(
 }
 
 /**
+ * A word a model writes into an OPTIONAL slot it has nothing to put in.
+ *
+ * Small models fill every property of a schema, so an untaken `threshold`
+ * arrives as `"none"` rather than absent — and `"none"` is not a number, so the
+ * whole call was refused as invalid over an argument the tool did not need.
+ * `resolveTargets` has guarded the same slip on `sku` for a while; this moves
+ * the guard to the edge, where every optional argument gets it.
+ *
+ * It applies ONLY to optional arguments, and never when the spec's own enum
+ * lists the word — `filter_view.preset` accepts a literal `"none"` that means
+ * "clear the filter", and that is a value, not a blank.
+ */
+const PLACEHOLDERS = new Set(["none", "null", "n/a", "na", "undefined", "any", "all"]);
+
+function isBlank(spec: ArgSpec, raw: unknown): boolean {
+  if (raw === undefined || raw === null || raw === "") return true;
+  if (spec.required || typeof raw !== "string") return false;
+  const s = raw.trim().toLowerCase();
+  if (!PLACEHOLDERS.has(s)) return false;
+  // A legal member of this argument's own enum is a value, never a blank.
+  return spec.kind !== "enum" || !spec.values.some((v) => v.toLowerCase() === s);
+}
+
+/**
  * Parse a tool call's arguments against its spec.
  *
  * Iterates the SPEC, never the input — so an argument the tool does not declare
@@ -333,7 +362,7 @@ export function parseArgs(
   const args: ParsedArgs = {};
   for (const [arg, argSpec] of Object.entries(spec.args)) {
     const value = raw[arg];
-    if (value === undefined || value === null || value === "") {
+    if (isBlank(argSpec, value)) {
       if (argSpec.required)
         return {
           error: argSpec.refusal ?? `${tool} needs "${arg}" — it was not provided.`,

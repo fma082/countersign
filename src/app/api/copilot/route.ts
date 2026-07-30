@@ -16,7 +16,13 @@
 
 import { streamChatResilient } from "@/lib/engine/resilient";
 import { govern, executeGate, executeUndo, parseUndo, METRIC_PHRASE, TOOLS } from "@/lib/engine/tools";
-import { currentViewLine, parseFilterState } from "@/lib/engine/filter-spec";
+import {
+  COMPARE_FIELDS,
+  COMPARE_OPS,
+  FILTER_PRESETS,
+  currentViewLine,
+  parseFilterState,
+} from "@/lib/engine/filter-spec";
 import { filterEffect, resolveFilter } from "@/lib/engine/filter";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
 import { rateLimit, clientIp } from "@/lib/engine/rate-limit";
@@ -73,10 +79,11 @@ ${METRIC_VOCABULARY}
   THE STOCK AXIS HAS TWO METRICS AND THEY ARE NOT INTERCHANGEABLE. A question naming a NUMBER of units is stock_below, and you must pass that number as threshold: "less than 50 in stock", "under 50 units", "stock below 50", "menos de 50 en stock", "con menos de 50 unidades" → stock_below with threshold: 50. Only a question with NO number — "running low", "which need reordering", "below the reorder point", "hay que reponer" — is below_reorder. Never answer a numbered question with below_reorder: it compares each product to its own reorder point, so it does not contain the user's number at all.
 - inspect_product(sku): show the human ONE product's full record. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?"). You get its name, sku and status — never its price, stock or margin, because the record is already on screen. Write one sentence of context and NEVER state a number you were not given.
 
-Filtering the table (the human has these same two controls in a filter bar above the table, and can clear any filter you set with one click):
-- filter_view(preset): filter the table to a NAMED group. preset ∈ the metric names above, or "none" to clear the filter and show everything.
-- filter_compare(field, op, value): filter the table by a NUMBER. Use this for any question that names a quantity — "less than 50 in stock", "under $20", "exactly 0 in stock". field ∈ stock, effective_price. op ∈ lt, lte, gt, gte, eq. Copy the number from the question; never invent one.
-  Only ONE filter is active at a time: a new one replaces the last.
+CHANGING WHAT THE TABLE SHOWS — a different job from answering. The human has these same two controls in a filter bar above the table and can clear anything you set with one click.
+- filter_view(preset): narrow the table to a NAMED group. preset ∈ ${FILTER_PRESETS.join(", ")}, or "none" to clear the filter and show all 30.
+  Any message asking to filter / narrow / show only a group runs THIS, not query_products — including when the same message opens with a question. "What is causing those negative margins? Filter the table to the products still on an expired sale." → filter_view("expired_sale"). The question is context; the instruction is what you run.
+- filter_compare(field, op, value): narrow the table by a NUMBER. Use for any request naming a quantity — "less than 50 in stock", "under $20", "exactly 0 in stock". field ∈ ${COMPARE_FIELDS.join(", ")}. op ∈ ${COMPARE_OPS.join(", ")}. Copy the number from the request; never invent one.
+Only ONE filter is active at a time: a new one replaces the last.
 
 Reversible writes (run immediately, one product, undoable):
 - update_price(sku, price)
