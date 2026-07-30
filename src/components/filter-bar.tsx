@@ -18,6 +18,13 @@ import { cn } from "@/lib/cn";
  * The human's filter controls — and the whole point of them is that they are
  * not "the human's".
  *
+ * There is no control here for the revealed columns, and that is the design
+ * rather than an omission. Margin and Sale ends follow the ACTIVE CRITERION,
+ * resolved server-side: the criterion that is about margin puts Margin up, and
+ * clearing the filter — one click on the ✕ below — takes it down. A separate
+ * toggle would be a second way to reach a column whose whole guarantee is that
+ * only one question can reach it.
+ *
  * Every control here emits a `FilterState` and posts it to the same endpoint
  * the model's `filter_view` and `filter_compare` reach, which run the same
  * resolver and return the same effect. The agent has no channel to change this
@@ -34,16 +41,12 @@ import { cn } from "@/lib/cn";
  */
 export function FilterBar({
   filter,
-  revealMargin,
   onApply,
-  onHideMargin,
   disabled,
 }: {
   /** What the server last resolved. `null` — never filtered this session. */
   filter: ResolvedFilter | null;
-  revealMargin: boolean;
   onApply: (next: FilterState) => void;
-  onHideMargin: () => void;
   /** The engine is mid-turn or parked at a gate; the view is not the human's to
    *  move right now. The controls stay VISIBLE and go inert — removing them
    *  would make the bar flicker out exactly when the table is most in flux. */
@@ -117,15 +120,6 @@ export function FilterBar({
             count={applied.count}
             disabled={disabled}
             onClear={clear}
-          />
-        )}
-
-        {revealMargin && (
-          <Dismissible
-            label="Margin"
-            title="Hide the margin column"
-            disabled={disabled}
-            onDismiss={onHideMargin}
           />
         )}
       </div>
@@ -252,43 +246,6 @@ function AppliedChip({
         aria-label={`Clear the filter — ${label}`}
         title="Clear the filter (Esc)"
         className="flex size-4 flex-none items-center justify-center rounded-full text-ink-2 transition-colors hover:bg-panel hover:text-ink disabled:opacity-40"
-      >
-        <X size={11} aria-hidden />
-      </button>
-    </span>
-  );
-}
-
-/**
- * A column the agent turned on and the human can turn off.
- *
- * There is no control to turn it back ON, and that asymmetry is the design:
- * revealing Margin requires numbers the browser does not have and must not be
- * given, so it can only ever follow from a criterion that is about margin.
- * Hiding it is discarding something already on screen, which needs no server
- * and no permission.
- */
-function Dismissible({
-  label,
-  title,
-  disabled,
-  onDismiss,
-}: {
-  label: string;
-  title: string;
-  disabled?: boolean;
-  onDismiss: () => void;
-}) {
-  return (
-    <span className="inline-flex flex-none items-center gap-1.5 rounded-full border border-line bg-panel py-1 pl-2.5 pr-1 text-[11.5px] text-ink-2">
-      {label}
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={onDismiss}
-        aria-label={title}
-        title={title}
-        className="flex size-4 items-center justify-center rounded-full transition-colors hover:bg-sub hover:text-ink disabled:opacity-40"
       >
         <X size={11} aria-hidden />
       </button>

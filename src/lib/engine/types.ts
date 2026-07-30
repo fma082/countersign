@@ -107,8 +107,20 @@ export interface StaleUndo {
   actual: number | boolean; // what the value is now
 }
 
-/** Columns the table hides until a tool reveals them. */
-export type ColumnKey = "margin";
+/**
+ * Columns the table does not show by default, and shows while a criterion needs
+ * them. Which ones is derived from the active `FilterState`, server-side, on
+ * every resolution — never accumulated in the client.
+ *
+ * That derivation is what keeps the margin rule intact. A revealed column used
+ * to be a flag that switched on and stayed on, so it outlived the criterion
+ * that earned it: after a margin question, filtering to expired sales left a
+ * Margin column standing over rows whose margins had never been sent, printing
+ * a dash on each. Tied to the criterion, the column leaves when the question
+ * does, and filtering to `active` reveals nothing — `active` is not a criterion
+ * about margin, so there is no filter sequence that walks the cost table out.
+ */
+export type ColumnKey = "margin" | "saleEnds";
 
 // ── The filter state: a CRITERION, never a resolved list ───────────────────
 /**
@@ -198,6 +210,18 @@ export interface ResolvedFilter {
   skus: string[] | null;
   label: string;
   count: number;
+  /**
+   * The columns THIS criterion needs, and the complete set of them. The table
+   * renders its base columns plus these, so changing the criterion recomputes
+   * the whole set and clearing it leaves none.
+   *
+   * A criterion that selects rows on a dimension the table does not show has to
+   * put that dimension somewhere, or the human is looking at six rows with no
+   * way to see what they have in common. It goes in the table, next to the rows
+   * it explains — not into a list in the copilot panel, which would answer a
+   * question about the table on a second surface that can disagree with it.
+   */
+  reveal: ColumnKey[];
 }
 
 /** A tool event as the client should render it — nothing left to parse. */
@@ -364,17 +388,11 @@ export interface ViewEffect {
    * Absent = leave the filter as it is.
    */
   filter?: ResolvedFilter;
-  /** Columns to reveal (additive). */
-  reveal?: ColumnKey[];
-  /**
-   * Columns to hide again. Server-authored, because WHICH criterion earns a
-   * column is a governance rule and not a display preference: Margin exists
-   * because a criterion asked about margin, so clearing the filter takes the
-   * question away and the column with it. Left revealed over no criterion at
-   * all, it would print a dash on every row the reveal never covered — a column
-   * promising numbers it is not going to deliver.
-   */
-  conceal?: ColumnKey[];
+  // There is no `reveal` here, and no `conceal` either. Both existed while the
+  // client kept a set of revealed columns and the server sent it deltas — an
+  // accumulator, which is exactly the thing that let a column outlive its
+  // criterion. The revealed set now travels whole inside `filter`, so there is
+  // nothing to accumulate and no delta to get wrong.
   /** Margin values by SKU — the only channel by which margin reaches the client. */
   margins?: Record<string, number>;
   /** Row changes applied after an approved destructive op. */

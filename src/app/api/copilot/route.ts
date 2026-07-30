@@ -542,7 +542,7 @@ function gateClosing(payload: unknown): string {
 }
 
 function hasEffect(e: ViewEffect): boolean {
-  return Boolean(e.filter || e.reveal || e.margins || e.mutations);
+  return Boolean(e.filter || e.margins || e.mutations);
 }
 
 const KNOWN_TOOLS = [

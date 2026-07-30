@@ -50,7 +50,13 @@ const gate: GatePreview = {
   // `describeFilter` — a still frame is not a licence to write the sentence a
   // second time, and `filter-spec` is pure precisely so this import is free.
   effect: {
-    filter: { state: NO_FILTER, skus: null, label: describeFilter(NO_FILTER), count: PRODUCTS.length },
+    filter: {
+      state: NO_FILTER,
+      skus: null,
+      label: describeFilter(NO_FILTER),
+      count: PRODUCTS.length,
+      reveal: [],
+    },
   },
 };
 
@@ -66,7 +72,7 @@ const toolEvent: ToolEvent = {
 
 const view: TableView = {
   filterSkus: null,
-  revealMargin: false,
+  reveal: [],
   margins: {},
   targetIds,
   changedIds: [],

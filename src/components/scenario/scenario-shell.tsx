@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
 import type { PublicProduct } from "@/lib/scenario/catalog";
-import type { ColumnKey, FilterState, ResolvedFilter, ViewEffect } from "@/lib/engine/types";
+import type { FilterState, ResolvedFilter, ViewEffect } from "@/lib/engine/types";
 import { NavRail } from "@/components/nav-rail";
 import { FilterBar } from "@/components/filter-bar";
 import { ProductTable, type TableView } from "@/components/product-table";
@@ -45,7 +45,6 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
   const filterRef = useRef<ResolvedFilter | null>(null);
   filterRef.current = filter;
   const filterSkus = filter?.skus ?? null;
-  const [reveal, setReveal] = useState<Set<ColumnKey>>(new Set());
   const [margins, setMargins] = useState<Record<string, number>>({});
   const [targetIds, setTargetIds] = useState<string[]>([]);
   const [changedIds, setChangedIds] = useState<string[]>([]);
@@ -58,14 +57,6 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     // chip, and the state goes back to the server on the next request — three
     // uses, none of which involves interpreting the criterion.
     if (effect.filter !== undefined) setFilter(effect.filter);
-    if (effect.reveal?.length || effect.conceal?.length) {
-      setReveal((prev) => {
-        const next = new Set(prev);
-        for (const c of effect.reveal ?? []) next.add(c);
-        for (const c of effect.conceal ?? []) next.delete(c);
-        return next;
-      });
-    }
     if (effect.margins) setMargins((prev) => ({ ...prev, ...effect.margins }));
 
     if (effect.mutations?.length) {
@@ -171,7 +162,6 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     copilotRef.current.reset();
     setRows(initialRows);
     setFilter(null);
-    setReveal(new Set());
     setMargins({});
     setTargetIds([]);
     setChangedIds([]);
@@ -191,7 +181,10 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
 
   const view: TableView = {
     filterSkus,
-    revealMargin: reveal.has("margin"),
+    // Derived, not accumulated. There is no `revealedColumns` state in this
+    // component to fall out of step with the criterion — the server sends the
+    // whole set with every resolution and this reads it.
+    reveal: filter?.reveal ?? [],
     margins,
     targetIds,
     changedIds,
@@ -236,19 +229,7 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
         </header>
         {/* Between the header and the scroll container, so it never competes
             with the table's sticky thead. */}
-        <FilterBar
-          filter={filter}
-          revealMargin={view.revealMargin}
-          onApply={copilot.applyFilter}
-          onHideMargin={() =>
-            setReveal((prev) => {
-              const next = new Set(prev);
-              next.delete("margin");
-              return next;
-            })
-          }
-          disabled={busy}
-        />
+        <FilterBar filter={filter} onApply={copilot.applyFilter} disabled={busy} />
         <ProductTable rows={rows} view={view} />
       </main>
 

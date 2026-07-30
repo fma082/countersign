@@ -27,7 +27,7 @@ import {
   type PublicProduct,
 } from "@/lib/scenario/catalog";
 import { REFERENCE_DATE, effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
-import { PRESET_SPEC, describeFilter, filterMeasure } from "./filter-spec";
+import { PRESET_SPEC, describeFilter, filterMeasure, filterReveal } from "./filter-spec";
 import type {
   ColumnKey,
   CompareField,
@@ -102,6 +102,9 @@ export function resolveFilter(state: FilterState): ResolvedFilter {
     skus: state.kind === "none" ? null : rows.map((p) => p.sku),
     label: describeFilter(state),
     count: rows.length,
+    // Whole set, recomputed here. Nothing downstream merges this with a
+    // previous one — that merge is what let a column outlive its criterion.
+    reveal: filterReveal(state),
   };
 }
 
@@ -124,19 +127,17 @@ export { marginsFor };
  * everything else does not, and there is no argument to get wrong.
  */
 export function filterEffect(state: FilterState): ViewEffect {
-  const reveal = state.kind === "preset" && state.preset === "negative_margin";
+  const filter = resolveFilter(state);
   return {
-    filter: resolveFilter(state),
-    ...(reveal
-      ? { reveal: ["margin"] as ColumnKey[], margins: marginsFor(filterProducts(state)) }
+    filter,
+    // Margin VALUES ride along only when the criterion revealed the margin
+    // COLUMN — the two are decided by the same fact, so there is no state in
+    // which the column is up and the numbers behind it are missing (the case
+    // that used to print a dash), and none in which margins are broadcast for
+    // a criterion that never asked about margin.
+    ...(filter.reveal.includes("margin")
+      ? { margins: marginsFor(filterProducts(state)) }
       : {}),
-    // Clearing the filter removes the question the column answered. Switching to
-    // a DIFFERENT criterion does not: `expired_sale` still overlaps the rows
-    // whose margin was revealed, and the margins already on the client stay true
-    // for them. What cannot happen either way is re-broadcasting margins for the
-    // new criterion's rows — margin ships only under a criterion that is about
-    // margin, or the whole cost table falls out of enough filter changes.
-    ...(state.kind === "none" ? { conceal: ["margin"] as ColumnKey[] } : {}),
   };
 }
 

@@ -33,6 +33,7 @@
  */
 
 import type {
+  ColumnKey,
   CompareField,
   CompareOp,
   FilterPreset,
@@ -73,6 +74,16 @@ interface PresetSpec {
   measure: MeasureKind;
   /** Why this is a preset and not a comparison. */
   expressibleAs: "field-vs-field" | "compound" | "server-constant" | "enum-shortcut";
+  /**
+   * Columns the table must show while this criterion is active, because the
+   * criterion selected its rows on a dimension the table does not show by
+   * default. Six rows that share an invisible property look arbitrary.
+   *
+   * This is the whole reveal rule, and it is a property of the criterion — so
+   * only a criterion ABOUT margin can put margin on screen, and no sequence of
+   * other filters can accumulate its way there.
+   */
+  reveal?: ColumnKey[];
 }
 
 export const PRESET_SPEC: Record<FilterPreset, PresetSpec> = {
@@ -87,18 +98,25 @@ export const PRESET_SPEC: Record<FilterPreset, PresetSpec> = {
     chip: "negative margin",
     measure: "magnitude",
     expressibleAs: "field-vs-field", // effectivePrice < cost, and cost is server-only
+    reveal: ["margin"],
   },
   expired_sale: {
     phrase: "products still on an expired sale price",
     chip: "expired sale",
     measure: "recency",
     expressibleAs: "server-constant", // saleEnds < today, and today is ours
+    // The date is the reason these rows are here. Without it the table shows
+    // six ordinary products and the human has to take the label's word for it.
+    reveal: ["saleEnds"],
   },
   on_sale: {
     phrase: "products on a sale that has not expired",
     chip: "on sale",
     measure: "none",
     expressibleAs: "compound", // salePrice !== null AND not expired
+    // Same axis, same column — and here it also exposes the sale with no end
+    // date at all, which is the one row this catalog cannot reason about.
+    reveal: ["saleEnds"],
   },
   hidden: {
     phrase: "products hidden from the web store",
@@ -191,6 +209,17 @@ export function describeFilter(state: FilterState): string {
       return `products with ${field.noun} ${OP_SPEC[state.op].phrase} ${field.format(state.value)}`;
     }
   }
+}
+
+/**
+ * The columns this criterion needs on screen — the WHOLE set, not a delta.
+ *
+ * A comparison reveals nothing: both fields it can address (`stock`,
+ * `effective_price`) are already columns, so the reason a row was selected is
+ * visible without help.
+ */
+export function filterReveal(state: FilterState): ColumnKey[] {
+  return state.kind === "preset" ? (PRESET_SPEC[state.preset].reveal ?? []) : [];
 }
 
 /** What a row of this criterion measures. A property of the criterion. */

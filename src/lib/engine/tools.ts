@@ -51,6 +51,7 @@ import {
 import { subtitleIntent } from "./intent-subtitle";
 import { buildProviderTools, parseArgs, toolSpecs, type ParsedArgs } from "./tool-args";
 import type {
+  ColumnKey,
   CompareField,
   CompareOp,
   DetailField,
@@ -244,7 +245,7 @@ export function govern(
       return governInspect(id, args);
     case "filter_view":
     case "filter_compare":
-      return governFilter(id, name, args, turnMessage);
+      return governFilter(id, name, args);
     case "update_price":
       return governFieldWrite(id, "update_price", "price", args);
     case "adjust_stock":
@@ -340,12 +341,12 @@ function governQuery(id: string, args: ParsedArgs, turnMessage?: string): Govern
   // it sets is a real FilterState — the same one the bar would show for the
   // `negative_margin` chip. This tool writes no view state the human cannot
   // read off the bar and clear with one click.
+  // A margin question narrows the table to the rows it is about, and it does so
+  // by setting the `negative_margin` FilterState — the same criterion the bar's
+  // chip sets, which is also what reveals the Margin column. One fact decides
+  // the rows, the label, the chip and the column.
   const effect: ViewEffect = revealMargin
-    ? {
-        reveal: ["margin"],
-        margins: marginsFor(rows),
-        filter: resolveFilter({ kind: "preset", preset: "negative_margin" }),
-      }
+    ? { ...filterEffect({ kind: "preset", preset: "negative_margin" }) }
     : {};
   // Kept only if it differs from what we ran. A subtitle that repeats the
   // header teaches the human to stop reading the subtitle.
@@ -517,56 +518,52 @@ function governInspect(id: string, args: ParsedArgs): Governed {
  * the system prompt — and answered "13 products are selling below cost" over a
  * run of `below_reorder`.
  */
-function governFilter(
-  id: string,
-  tool: string,
-  args: ParsedArgs,
-  turnMessage?: string,
-): Governed {
+// No `turnMessage`, and nothing to do with one. The read subtitle
+// ("interpreted from: …") belongs to a rendered list, attributing a set of rows
+// to the sentence that produced them. A filter renders no list — the table is
+// the answer, and it carries the criterion in the bar's chip, which is the
+// server's own wording rather than a quote of the human.
+function governFilter(id: string, tool: string, args: ParsedArgs): Governed {
   const state = filterStateFrom(tool, args);
   const effect = filterEffect(state);
   const resolved = effect.filter!;
   const cleared = state.kind === "none";
 
+  const columns = resolved.reveal.length ? `, ${resolved.reveal.map(columnLabel).join(" + ")} revealed` : "";
   const summary = cleared
     ? `Cleared the filter — showing all ${resolved.count} products.`
-    : `Filtered to ${resolved.count} ${resolved.label}${effect.reveal ? ", Margin revealed" : ""}.`;
-
-  const outcome: ToolOutcome = {
-    // The criterion in words, built by the server from what it executed. No
-    // sku, no row — the same guarantee `query_products` makes.
-    modelPayload: {
-      count: resolved.count,
-      criterion: filterToken(state),
-      criterionLabel: resolved.label,
-      rendered: true,
-    },
-  };
-
-  // Clearing renders nothing: the point of that branch is removing a selection,
-  // not listing one. `rendered` stays true either way, because the table below
-  // is what the human is now looking at.
-  if (!cleared) {
-    // Same gate as `governQuery`, and the same source: this turn's message.
-    const userIntent = subtitleIntent(cleanIntent(turnMessage), resolved.label);
-    outcome.renderPayload = {
-      component: "product_list",
-      count: resolved.count,
-      criterionLabel: resolved.label,
-      // Measured and ordered by the criterion this call ran, so the same
-      // component reads a filter result and a query result alike.
-      data: measuredRows(filterCriterion(state)),
-      ...(userIntent ? { userIntent } : {}),
-    };
-  }
+    : `Filtered to ${resolved.count} ${resolved.label}${columns}.`;
 
   return {
     kind: "safe",
     event: mk(id, tool, "safe", "ok", summary, args, resolved.skus ?? []),
     effect,
-    outcome,
+    // NO renderPayload. Filtering changes the table, and the filtered table is
+    // the answer — listing the same rows again in the copilot panel would put
+    // one question on two surfaces that can then disagree, which is the failure
+    // the single render slot was built to prevent, one level up.
+    //
+    // The panel used to be where a filter's extra dimension went: `expired_sale`
+    // shipped a list carrying each sale's end date, a fact with no column in the
+    // table. That is now a REVEALED COLUMN instead (`ResolvedFilter.reveal`), so
+    // the rows and the reason they were selected sit together, and nothing has
+    // to be read off a second surface to make sense of the first.
+    //
+    // `query_products` still renders. Asking and filtering are different
+    // intents: one answers in the panel, one changes the table.
+    outcome: modelOnly({
+      count: resolved.count,
+      criterion: filterToken(state),
+      criterionLabel: resolved.label,
+      // The table below IS the render, so the model still writes context rather
+      // than a list.
+      rendered: true,
+    }),
   };
 }
+
+/** A revealed column's name, for the tool card's summary line. */
+const columnLabel = (c: ColumnKey): string => (c === "margin" ? "Margin" : "Sale ends");
 
 /**
  * The tool's arguments as a `FilterState`.
