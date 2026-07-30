@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageSquare, X } from "lucide-react";
 import type { PublicProduct } from "@/lib/scenario/catalog";
-import type { ColumnKey, ViewEffect } from "@/lib/engine/types";
+import type { ColumnKey, FilterState, ResolvedFilter, ViewEffect } from "@/lib/engine/types";
 import { NavRail } from "@/components/nav-rail";
 import { ProductTable, type TableView } from "@/components/product-table";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -18,9 +18,31 @@ const LOCKED_PLACEHOLDER = "Complete the steps above to unlock free input.";
 const effective = (p: PublicProduct): number => p.salePrice ?? p.price;
 const CHANGED_MS = 6000;
 
+/**
+ * The empty criterion. A VALUE, not a description — which is why it can live in
+ * a client component while every phrase about a filter comes from the server.
+ * `filter-spec.ts` exports the same constant, but importing it here would pull
+ * its module graph toward `catalog.ts`, and `catalog.ts` carries `cost`.
+ */
+const NO_FILTER: FilterState = { kind: "none" };
+
 export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] }) {
   const [rows, setRows] = useState<PublicProduct[]>(initialRows);
-  const [filterSkus, setFilterSkus] = useState<string[] | null>(null);
+  /**
+   * The whole of the view's filter, exactly as the server last resolved it:
+   * the rows to show, the criterion, and the label to print. `null` means no
+   * filter has been applied — distinct from a filter that matched nothing.
+   *
+   * The client stores this and renders it. It does not evaluate the criterion,
+   * re-count the rows, or compose the label; all three arrived resolved.
+   */
+  const [filter, setFilter] = useState<ResolvedFilter | null>(null);
+  // Read at request time by the copilot, which puts it in every request body.
+  // A ref, because the callbacks object is memoised and would otherwise close
+  // over a stale state value.
+  const filterRef = useRef<ResolvedFilter | null>(null);
+  filterRef.current = filter;
+  const filterSkus = filter?.skus ?? null;
   const [reveal, setReveal] = useState<Set<ColumnKey>>(new Set());
   const [margins, setMargins] = useState<Record<string, number>>({});
   const [targetIds, setTargetIds] = useState<string[]>([]);
@@ -30,7 +52,10 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
   const changedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const applyEffect = useCallback((effect: ViewEffect) => {
-    if (effect.filter !== undefined) setFilterSkus(effect.filter.skus);
+    // Stored whole and verbatim. The SKUs draw the table, the label draws the
+    // chip, and the state goes back to the server on the next request — three
+    // uses, none of which involves interpreting the criterion.
+    if (effect.filter !== undefined) setFilter(effect.filter);
     if (effect.reveal?.length) {
       setReveal((prev) => {
         const next = new Set(prev);
@@ -76,10 +101,11 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
       onGateOpen: (ids) => {
         // Reveal every targeted row while the human decides — clear any filter a
         // prior read left on, so all "could pass" rows are visible at once.
-        setFilterSkus(null);
+        setFilter(null);
         setTargetIds(ids);
       },
       onGateClose: () => setTargetIds([]),
+      getFilter: () => filterRef.current?.state ?? NO_FILTER,
     }),
     [applyEffect],
   );
@@ -141,7 +167,7 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
   const resetScenario = useCallback(() => {
     copilotRef.current.reset();
     setRows(initialRows);
-    setFilterSkus(null);
+    setFilter(null);
     setReveal(new Set());
     setMargins({});
     setTargetIds([]);
@@ -169,7 +195,10 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     priceWas,
   };
 
-  const shownCount = filterSkus ? filterSkus.length : rows.length;
+  // The server's own count, not `filterSkus.length`. Same number today, but one
+  // of them is a fact the resolver reported and the other is a length the client
+  // measured — and the readout has to say what the resolver said.
+  const shownCount = filter?.count ?? rows.length;
 
   return (
     <div className="grid h-dvh grid-cols-1 overflow-hidden lg:grid-cols-[56px_minmax(0,1fr)_380px]">

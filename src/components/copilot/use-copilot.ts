@@ -8,6 +8,7 @@ import {
 } from "@/lib/copilot-statechart";
 import type {
   ErrorReason,
+  FilterState,
   GatePreview,
   RenderPayload,
   StaleUndo,
@@ -52,6 +53,20 @@ export interface CopilotCallbacks {
   onEffect(effect: ViewEffect): void;
   onGateOpen(targetIds: string[]): void;
   onGateClose(): void;
+  /**
+   * The `FilterState` currently on screen, read at request time.
+   *
+   * The panel does not OWN this value — the workspace does, because the filter
+   * is the table's, not the copilot's. The panel only needs to put it in the
+   * body of every request, so it reads it through a callback instead of keeping
+   * a second copy that could disagree with the one the table is rendering.
+   *
+   * It is an opaque token here in every sense: nothing in this file reads a
+   * field of it, branches on it, or counts anything from it. It arrives from
+   * the server inside an effect, is stored verbatim, and goes back out
+   * unexamined — like the message history beside it.
+   */
+  getFilter(): FilterState;
 }
 
 /**
@@ -272,7 +287,15 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
         const res = await fetch("/api/copilot", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: historyRef.current, ...bodyExtra }),
+          // `filter` rides on EVERY request, beside `messages` and for the same
+          // reason: the server is stateless about the view, so the turn has to
+          // carry what the human is looking at. It is what the `Current view:`
+          // line in the prompt is built from.
+          body: JSON.stringify({
+            messages: historyRef.current,
+            filter: cbRef.current.getFilter(),
+            ...bodyExtra,
+          }),
           signal: controller.signal,
         });
         // A non-ok status can still carry a typed error frame in its NDJSON body
@@ -347,6 +370,21 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
       dispatch({ kind: "submit" }); // clears it again — batched, no flash
       void consume(fallback ? { fallbackTool: fallback.tool, fallbackArgs: fallback.args } : {});
     },
+    [consume],
+  );
+
+  /**
+   * The human's own filter, sent down the same pipe the agent's tools use.
+   *
+   * It goes to the server rather than being applied locally, and not for
+   * consistency's sake: `negative_margin` is `effectivePrice < cost`, and
+   * `cost` is stripped server-side by `publicProducts`, so the browser cannot
+   * evaluate that predicate at all. Resolving filters on the client would work
+   * for six of the seven presets and silently fail on the one that matters —
+   * so none of them are resolved here.
+   */
+  const applyFilter = useCallback(
+    (next: FilterState) => void consume({ action: "filter", setFilter: next }),
     [consume],
   );
 
@@ -438,6 +476,7 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
     setDraft,
     submit,
     submitPrompt,
+    applyFilter,
     pushNote,
     pushClosing,
     reset,

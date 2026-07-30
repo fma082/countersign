@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronRight, RotateCcw } from "lucide-react";
 import { isBusy, isGateOpen } from "@/lib/copilot-statechart";
-import { useCopilot } from "@/components/copilot/use-copilot";
+import { useCopilot, type CopilotCallbacks } from "@/components/copilot/use-copilot";
 import { StatusBadge } from "@/components/copilot/status-badge";
 import { ToolCard } from "@/components/copilot/tool-card";
 import { GateCard } from "@/components/copilot/gate-card";
@@ -12,7 +12,15 @@ import { wedgeReplay, WEDGE_PROMPT } from "@/lib/home/pattern-scripts";
 import { cn } from "@/lib/cn";
 
 // Landing demos are scripted: nothing here should touch a table or a live model.
-const NOOP_CALLBACKS = { onEffect() {}, onGateOpen() {}, onGateClose() {} };
+// The landing demo has no table, so there is no view for an effect to change
+// and no filter to report. It still has to answer `getFilter` — the panel puts
+// it in every request body — and the honest answer is the empty criterion.
+const NOOP_CALLBACKS: CopilotCallbacks = {
+  onEffect() {},
+  onGateOpen() {},
+  onGateClose() {},
+  getFilter: () => ({ kind: "none" }),
+};
 
 /**
  * Pattern 04 — the wedge, replaying a recorded session on the landing page.

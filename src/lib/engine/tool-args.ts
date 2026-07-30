@@ -66,7 +66,13 @@ interface ToolSpec {
  * this layer decides whether a value is WELL-FORMED, the tool body decides
  * whether it is MEANINGFUL for what was asked.
  */
-export function toolSpecs(metrics: readonly string[], selectors: readonly string[]): Record<string, ToolSpec> {
+export function toolSpecs(
+  metrics: readonly string[],
+  selectors: readonly string[],
+  presets: readonly string[],
+  fields: readonly string[],
+  ops: readonly string[],
+): Record<string, ToolSpec> {
   return {
     query_products: {
       description:
@@ -95,18 +101,50 @@ export function toolSpecs(metrics: readonly string[], selectors: readonly string
       },
     },
 
+    // ── The two filter tools ────────────────────────────────────────────
+    // They are TWO tools and not one with a `preset` OR `(field, op, value)`
+    // argument, because a union argument's failure mode on a small model is
+    // sending both halves or neither — the same failure `resolveTargets`
+    // refuses when a write arrives with a `sku` AND a `where`. With disjoint
+    // `required` sets the two cannot be mixed: a call either names a preset or
+    // names a comparison, and `parseArgs` decides which before any body runs.
+    //
+    // They are also, together, exactly the two controls in the human's filter
+    // bar. The tool surface is a subset of the human's surface: there is no
+    // filter the model can apply that the bar cannot show and clear.
     filter_view: {
       description:
-        "Filter the product table to a metric so the human can see the rows. Read-only. Can reveal the hidden Margin column. You get the count and the criterion back, not the rows — the rows are displayed directly.",
+        "Filter the product table to a named group, so the human sees those rows and nothing else. Read-only. Pass preset: \"none\" to clear the filter and show all products. Use this for a group with a NAME; use filter_compare for a threshold on a number. You get the count and the criterion back, not the rows — the rows are displayed directly.",
       args: {
-        filter: { kind: "enum", values: [...metrics, "none"], required: true },
-        threshold: {
-          kind: "number",
-          exclusiveMin: 0,
-          description:
-            "Required when filter is stock_below: the number from the question. Copy it; never supply one the human did not give.",
+        preset: { kind: "enum", values: [...presets, "none"], required: true },
+      },
+    },
+
+    filter_compare: {
+      description:
+        "Filter the product table by comparing ONE field against ONE number — use this for any question that names a quantity (\"less than 50 in stock\", \"under $20\", \"exactly 0 in stock\"). Read-only. Copy the number from the question; never supply one the human did not give. To clear the filter, call filter_view with preset: \"none\".",
+      args: {
+        field: {
+          kind: "enum",
+          values: fields,
+          required: true,
+          description: "stock = units on hand. effective_price = what the customer pays today (the sale price when one is running).",
         },
-        reveal_margin: { kind: "boolean" },
+        op: {
+          kind: "enum",
+          values: ops,
+          required: true,
+          description: "lt = less than, lte = at most, gt = greater than, gte = at least, eq = exactly.",
+        },
+        value: {
+          kind: "number",
+          // `min`, not `exclusiveMin`. `stock eq 0` — "which products are out of
+          // stock" — is a real question, and the old `threshold` argument's
+          // exclusive bound made it unaskable.
+          min: 0,
+          required: true,
+          description: "The number from the question (\"less than 50 in stock\" → 50).",
+        },
       },
     },
 

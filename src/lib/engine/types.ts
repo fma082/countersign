@@ -110,6 +110,96 @@ export interface StaleUndo {
 /** Columns the table hides until a tool reveals them. */
 export type ColumnKey = "margin";
 
+// ── The filter state: a CRITERION, never a resolved list ───────────────────
+/**
+ * WHAT THE TABLE IS FILTERED TO — and the whole design is in the fact that this
+ * is a criterion rather than a list of SKUs.
+ *
+ * The view state used to travel as `string[] | null`: the rows the server had
+ * resolved, frozen at the moment it resolved them. Three things follow from a
+ * frozen list that do not follow from a criterion:
+ *
+ *   - It goes STALE. Approve a sweep while the table is filtered to
+ *     `expired_sale` and the list still names rows whose sale is now cleared.
+ *     The system dodged this by wiping the filter on every gate — that is, by
+ *     destroying the human's view to avoid lying about it.
+ *   - It cannot be RE-RESOLVED, so it cannot be restored after a gate, and the
+ *     human's filter is gone for good.
+ *   - It cannot be DESCRIBED. A list of thirteen SKUs does not know it means
+ *     "below their reorder point", so nothing could tell the human what they
+ *     were looking at, and nothing could tell the model either.
+ *
+ * A criterion survives all three: it is re-resolved on every request, it has a
+ * label, and it is small enough to travel on the wire each turn.
+ *
+ * THE CLIENT NEVER INTERPRETS THIS VALUE. It stores whatever the server last
+ * sent and hands it back on the next request, the same way it carries the
+ * message history. Every predicate in it is evaluated server-side, exactly once
+ * per request, by one resolver — see `filter.ts`. That is not a stylistic
+ * preference: `negative_margin` is `effectivePrice < cost`, and `cost` never
+ * reaches the browser, so a client-resolved filter is structurally impossible
+ * for at least one of these.
+ */
+export type FilterPreset =
+  /** stock < reorderPoint — a field against another FIELD. Irreducible. */
+  | "below_reorder"
+  /** effectivePrice < cost — field against field, and `cost` is server-only. */
+  | "negative_margin"
+  /** saleEnds !== null && saleEnds < today. */
+  | "expired_sale"
+  /** salePrice !== null && the sale has not expired. */
+  | "on_sale"
+  /** active && !webVisible. */
+  | "hidden"
+  | "active"
+  | "discontinued";
+
+/**
+ * The fields a free comparison may address. Both are columns the human can SEE
+ * in the table — that is the rule for admitting one, not an accident.
+ *
+ * `margin` is deliberately absent. A comparison operator with a free numeric
+ * value is an ORACLE: `margin < x` over varying x is a binary search on `cost`,
+ * to arbitrary precision, through a surface that never names cost once. Margin
+ * stays a preset (`negative_margin`), which reveals exactly one bit — the sign.
+ *
+ * `price` is absent too, in favour of the effective one: the table's Price
+ * column already shows `salePrice ?? price`, so a filter on the regular price
+ * would select rows by a number the column does not display.
+ */
+export type CompareField = "stock" | "effective_price";
+
+/**
+ * Word tokens, not symbols. The model picks from this list, and a small model
+ * choosing between `"<"`, `"&lt;"` and `"less than"` is a coin flip; `lt` is
+ * one token with one spelling. The UI paints them `< ≤ > ≥ =` — see
+ * `OP_SPEC.symbol`, which the model never sees.
+ */
+export type CompareOp = "lt" | "lte" | "gt" | "gte" | "eq";
+
+export type FilterState =
+  | { kind: "none" }
+  | { kind: "preset"; preset: FilterPreset }
+  | { kind: "compare"; field: CompareField; op: CompareOp; value: number };
+
+/**
+ * A `FilterState` after the server has run it. This is what ships on the wire:
+ * the rows to show, the criterion in the server's own words, and the state
+ * itself so the client can hand it back next turn.
+ *
+ * `label` is authored by ONE function over the state (`describeFilter`). The
+ * applied-filter chip, the "N of 30" readout and the `Current view:` line the
+ * model reads all print this same string. If they ever diverge, the human and
+ * the model are being told two different things about one table.
+ */
+export interface ResolvedFilter {
+  state: FilterState;
+  /** SKUs to show. `null` — and only for `kind: "none"` — means show them all. */
+  skus: string[] | null;
+  label: string;
+  count: number;
+}
+
 /** A tool event as the client should render it — nothing left to parse. */
 export interface ToolEvent {
   id: string;
@@ -267,8 +357,13 @@ export interface RowMutation {
 }
 
 export interface ViewEffect {
-  /** Set the visible-row filter. `null` clears it (show all 30). Absent = leave as-is. */
-  filter?: { skus: string[] | null };
+  /**
+   * Set the view's filter. Carries the resolved rows AND the criterion that
+   * produced them, so the client can render the table, label the chip, and hand
+   * the state back on the next request without ever evaluating a predicate.
+   * Absent = leave the filter as it is.
+   */
+  filter?: ResolvedFilter;
   /** Columns to reveal (additive). */
   reveal?: ColumnKey[];
   /** Margin values by SKU — the only channel by which margin reaches the client. */

@@ -18,39 +18,48 @@
  */
 
 import {
-  activeProducts,
-  activeSales,
   allProducts,
   applyClearExpiredSales,
   applyDiscontinue,
-  belowReorderProducts,
-  expiredSales,
   findProduct,
-  discontinuedProducts,
   getField,
-  hiddenActiveProducts,
-  negativeMargin,
   previewClearExpiredSales,
   REFERENCE_DATE,
   setField,
   setFieldBatch,
   stockBelowProducts as stockBelow,
-  toPublic,
-  type PublicProduct,
   type WriteField,
 } from "@/lib/scenario/catalog";
 import { effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
+import {
+  COMPARE_FIELDS,
+  COMPARE_OPS,
+  FILTER_PRESETS,
+  NO_FILTER,
+  filterToken,
+  money,
+} from "./filter-spec";
+import {
+  filterCriterion,
+  filterEffect,
+  marginsFor,
+  measuredRows,
+  presetPhrase,
+  resolveFilter,
+  type Criterion,
+} from "./filter";
 import { subtitleIntent } from "./intent-subtitle";
 import { buildProviderTools, parseArgs, toolSpecs, type ParsedArgs } from "./tool-args";
 import type {
+  CompareField,
+  CompareOp,
   DetailField,
+  FilterPreset,
+  FilterState,
   GateItem,
   GatePreview,
-  Measured,
-  MeasureKind,
   ProductDetail,
   ProviderTool,
-  RowMeasure,
   RowMutation,
   ToolEvent,
   ToolOutcome,
@@ -58,142 +67,85 @@ import type {
   ViewEffect,
 } from "./types";
 
-// ── Selector vocabulary ─────────────────────────────────────────────────────
-// Read metrics live on distinct AXES. Keeping the names axis-explicit stops a
-// small model from crossing them (e.g. "active products" is a STATUS, not a sale).
-//
-// BARE metrics name a group on their own: the string IS the whole criterion.
-// That is what lets them double as write selectors.
-const BARE_METRICS = [
-  // sale axis — is there a promo, and is it still valid?
-  "on_sale", // a live, valid promo right now
-  "expired_sale", // a promo whose end date has passed, not yet cleared
-  // status axis — active vs discontinued
-  "active",
-  "discontinued",
-  // other axes
-  "below_reorder",
-  "negative_margin",
-  "all",
-] as const;
-
+// ── Read vocabulary ─────────────────────────────────────────────────────────
 /**
- * Metrics that name a group only once a NUMBER is supplied. They extend the
- * read vocabulary and stop there — deliberately.
+ * `query_products`'s metrics are the FILTER PRESETS plus two of its own.
  *
- * `stock_below` is not in `SELECTORS`, so it never reaches `set_web_visible`'s
- * `where` or `discontinue_products`'s `filter`. Those resolve through
- * `resolveSelector(where: string)`, a bare string with nowhere to put a
- * threshold: listing `stock_below` there would offer a DESTRUCTIVE tool a
- * selector whose target set is undefined until an argument it cannot carry
- * arrives. A read can refuse a missing threshold and cost the human a
- * re-ask; a discontinue that resolves "stock below undefined" cannot.
+ * They are the same list on purpose. A preset is a named group; a read metric
+ * is a named group; there is no reason for the model to learn two names for
+ * "products below their reorder point" depending on whether it wants to count
+ * them or look at them. Sharing the list also means a preset added to the bar
+ * is answerable by a count on the same day, with no second table to remember.
+ *
+ * Read metrics live on distinct AXES, and keeping the names axis-explicit stops
+ * a small model from crossing them ("active products" is a STATUS, not a sale).
+ * The axis grouping is in the system prompt's vocabulary block.
  */
 const THRESHOLD_METRICS = ["stock_below"] as const;
 
-/** The full read vocabulary: what `query_products` and `filter_view` accept. */
-const METRICS = [...BARE_METRICS, ...THRESHOLD_METRICS] as const;
-type Metric = (typeof METRICS)[number];
 type ThresholdMetric = (typeof THRESHOLD_METRICS)[number];
+type Metric = FilterPreset | "all" | ThresholdMetric;
+
+const METRICS: readonly Metric[] = [...FILTER_PRESETS, "all", ...THRESHOLD_METRICS];
 const isMetric = (v: unknown): v is Metric =>
   typeof v === "string" && (METRICS as readonly string[]).includes(v);
 const needsThreshold = (m: Metric): m is ThresholdMetric =>
   (THRESHOLD_METRICS as readonly string[]).includes(m);
 
-// Write selectors: the bare metrics, plus "hidden" (active + not web-visible).
-// A threshold metric is absent by construction — see THRESHOLD_METRICS.
-const SELECTORS = [...BARE_METRICS, "hidden"] as const;
+/**
+ * Write selectors: the presets, plus "all". A threshold metric is absent by
+ * construction — `resolveSelector` takes a bare string with nowhere to put a
+ * number, so listing `stock_below` would offer a DESTRUCTIVE tool a selector
+ * whose target set is undefined until an argument it cannot carry arrives. A
+ * read can refuse a missing threshold and cost the human a re-ask; a
+ * discontinue that resolves "stock below undefined" cannot.
+ */
+const SELECTORS = [...FILTER_PRESETS, "all"] as const;
 
-interface Resolved {
-  rows: Product[];
-  phrase: string;
-  /** The criterion that produced the rows — what decides how a row is measured. */
-  metric: Metric;
-  /** The executed number, for a threshold metric. It is the ratio's reference. */
-  threshold: number;
-}
+const ALL_PHRASE = "products in the catalog";
+/** `{n}` is filled from the executed argument, never by the model. */
+const STOCK_BELOW_PHRASE = "products with stock below {n}";
 
 /**
- * The one place a metric is DESCRIBED. `criterionLabel` is read from here, and
- * so is the metric vocabulary in the system prompt — so the phrase the model is
- * told a metric MEANS and the phrase it is handed back after running it are the
- * same string by construction, not by two people remembering to match.
+ * The metric vocabulary in the server's own words — what the system prompt
+ * shows the model. The preset entries come from `PRESET_SPEC`, so the phrase
+ * the model is told a metric MEANS and the phrase it is handed back after
+ * running it are the same string by construction rather than by two people
+ * remembering to match.
  *
  * They were not, once: the prompt's only mapping from "selling below cost" to
  * `negative_margin` lived inside an unrelated formatting example, and editing
  * that example silently sent the metric routing somewhere else.
- *
- * A THRESHOLD metric keeps its wording here too, as a template with an `{n}`
- * the server substitutes with the number it actually ran — the parameter rides
- * in the phrase, not in the type.
- *
- * `measure` is the second attribute of the same entry: WHAT A ROW OF THIS
- * CRITERION MEASURES. It belongs next to the phrase because it is the same kind
- * of fact — a property of the criterion, decided when the criterion is defined,
- * not inferred later from whatever fields happened to come back. The rows of
- * `negative_margin` and `below_reorder` are the same product objects; only the
- * question that selected them differs, so only this table can say that one is a
- * signed percentage and the other a ratio against a reorder point.
  */
-interface MetricSpec {
-  phrase: string;
-  measure: MeasureKind;
-}
-
-export const METRIC_SPEC: Record<Metric, MetricSpec> = {
-  // sale axis
-  on_sale: { phrase: "products on a sale that has not expired", measure: "none" },
-  expired_sale: { phrase: "products still on an expired sale price", measure: "recency" },
-  // status axis
-  active: { phrase: "products with active status", measure: "none" },
-  discontinued: { phrase: "products that are discontinued", measure: "none" },
-  // other axes
-  below_reorder: { phrase: "products below their reorder point", measure: "ratio" },
-  negative_margin: { phrase: "products selling below cost", measure: "magnitude" },
-  all: { phrase: "products in the catalog", measure: "none" },
-  // threshold axis — {n} is filled from the executed argument, never by the model
-  stock_below: { phrase: "products with stock below {n}", measure: "ratio" },
+export const METRIC_PHRASE: Record<Metric, string> = {
+  ...(Object.fromEntries(FILTER_PRESETS.map((p) => [p, presetPhrase(p)])) as Record<
+    FilterPreset,
+    string
+  >),
+  all: ALL_PHRASE,
+  stock_below: STOCK_BELOW_PHRASE,
 };
 
-function metricRows(metric: Metric, threshold: number): Product[] {
-  switch (metric) {
-    case "on_sale":
-      return activeSales();
-    case "expired_sale":
-      return expiredSales();
-    case "active":
-      return activeProducts();
-    case "discontinued":
-      return discontinuedProducts();
-    case "below_reorder":
-      return belowReorderProducts();
-    case "negative_margin":
-      return negativeMargin();
-    case "all":
-      return allProducts();
-    case "stock_below":
-      return stockBelow(threshold);
-  }
-}
-
-/** The criterion in words, with the executed number substituted in. */
-function metricPhrase(metric: Metric, threshold: number): string {
-  return METRIC_SPEC[metric].phrase.replace("{n}", String(threshold));
-}
-
 /**
- * A read metric's rows and its wording. `threshold` is meaningful only for a
- * threshold metric; the bare ones ignore it.
+ * A metric, as a criterion: its rows, its wording and what its rows measure.
  *
- * Callers reach this through `readMetric`, which validates the argument first.
+ * Every preset routes through `filterCriterion` — the SAME assembly the filter
+ * bar and the filter tools use — so a count and a filter over one name can
+ * never disagree about what that name selects or how its rows are measured.
+ * Only `all` and `stock_below`, which have no preset, are built here.
  */
-function resolveMetric(metric: Metric, threshold = 0): Resolved {
-  return {
-    rows: metricRows(metric, threshold),
-    phrase: metricPhrase(metric, threshold),
-    metric,
-    threshold,
-  };
+function metricCriterion(metric: Metric, threshold: number): Criterion {
+  if (metric === "all") return { rows: allProducts(), label: ALL_PHRASE, measure: "none" };
+  if (metric === "stock_below")
+    return {
+      rows: stockBelow(threshold),
+      label: STOCK_BELOW_PHRASE.replace("{n}", String(threshold)),
+      measure: "ratio",
+      value: (p) => p.stock,
+      // The human's absolute number, not the product's own reorder point.
+      reference: () => threshold,
+    };
+  return filterCriterion({ kind: "preset", preset: metric });
 }
 
 /**
@@ -203,122 +155,22 @@ function resolveMetric(metric: Metric, threshold = 0): Resolved {
  * criterion it then reports as executed, which is the one thing this layer
  * exists to prevent.
  */
-function readMetric(metric: Metric, raw: unknown): Resolved | { error: string } {
-  if (!needsThreshold(metric)) return resolveMetric(metric);
+function readMetric(metric: Metric, raw: unknown): Criterion | { error: string } {
+  if (!needsThreshold(metric)) return metricCriterion(metric, 0);
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0)
     return {
       error: `${metric} needs a positive numeric threshold — got "${String(raw)}". Pass the number from the question (e.g. threshold: 50); the server will not pick one.`,
     };
-  return resolveMetric(metric, Math.floor(n));
+  return metricCriterion(metric, Math.floor(n));
 }
-
-/** A write selector resolves rows and a phrase, and nothing is measured off it. */
-type Selected = Pick<Resolved, "rows" | "phrase">;
 
 /** Write selectors resolve from a bare string, so only bare metrics qualify. */
-function resolveSelector(where: string): Selected | null {
-  if (where === "hidden")
-    return { rows: hiddenActiveProducts(), phrase: "products hidden from the web store" };
-  if (isMetric(where) && !needsThreshold(where)) return resolveMetric(where);
-  return null;
+function resolveSelector(where: string): { rows: Product[]; phrase: string } | null {
+  if (!isMetric(where) || needsThreshold(where)) return null;
+  const c = metricCriterion(where, 0);
+  return { rows: c.rows, phrase: c.label };
 }
-
-// ── The measure: resolved here, never inferred there ───────────────────────
-/**
- * The rows a read will render, each with its measure already computed.
- *
- * This is the read's counterpart to `criterionLabel`: the server knows which
- * criterion it ran, so it also knows what the rows measure and what they should
- * be ordered by. The client used to derive both from `stock / reorderPoint`,
- * which is only the right answer for `below_reorder` — a `negative_margin`
- * result showed a stock bar, a `stock_below(50)` result showed a bar against a
- * reorder point nobody had compared against, and `discontinued` showed a bar
- * measuring nothing. Same class of failure as a model renaming a criterion: a
- * consumer restating a result in terms the producer never used.
- *
- * Every row here carries the SAME kind, because one criterion produced them all.
- */
-function measuredRows(r: Resolved): Measured<PublicProduct>[] {
-  return sortByMeasure(r.rows.map((p) => ({ ...toPublic(p), measure: measureOf(r, p) })));
-}
-
-/** One row's measure, from the criterion — never from the shape of the data. */
-function measureOf({ metric, threshold }: Resolved, p: Product): RowMeasure {
-  switch (METRIC_SPEC[metric].measure) {
-    case "ratio":
-      // The reference is whatever the predicate actually compared against:
-      // the product's own reorder point, or the human's absolute number.
-      return {
-        kind: "ratio",
-        value: p.stock,
-        reference: metric === "stock_below" ? threshold : p.reorderPoint,
-      };
-    case "magnitude": {
-      // Margin reaches the client only under a criterion that is ABOUT margin —
-      // the same tool call that reveals the column. `cost` never travels.
-      const value = Math.round(marginPct(p) * 10) / 10;
-      return { kind: "magnitude", value, unit: "%", sign: value < 0 ? "negative" : "positive" };
-    }
-    case "recency": {
-      // `expired_sale` resolves through `saleExpired`, which is false when
-      // `saleEnds` is null — the date is guaranteed by the predicate that
-      // selected the row, not by an assertion here.
-      const date = p.saleEnds ?? REFERENCE_DATE;
-      return { kind: "recency", endedDaysAgo: daysSince(date), date };
-    }
-    case "none":
-      return { kind: "none" };
-  }
-}
-
-const DAY_MS = 86_400_000;
-const daysSince = (iso: string, today = REFERENCE_DATE): number =>
-  Math.max(0, Math.round((Date.parse(today) - Date.parse(iso)) / DAY_MS));
-
-/**
- * Worst first — and what "worst" means is a property of the measure, so the
- * order ships from here rather than being re-derived downstream.
- *
- *   ratio      lowest value/reference first (the deepest deficit)
- *   magnitude  largest absolute value first (the most negative margin)
- *   recency    oldest first (the sale that has been wrong the longest)
- *   none       nothing to rank — alphabetical by SKU
- *
- * Discontinued rows sink to the bottom under every kind: they are not
- * restocked, repriced or re-listed, so putting them on top would point the eye
- * at the one group not to act on. SKU breaks every tie, so the order is stable
- * between renders.
- */
-function sortByMeasure(rows: Measured<PublicProduct>[]): Measured<PublicProduct>[] {
-  return [...rows].sort((a, b) => {
-    const aOut = a.status === "discontinued";
-    const bOut = b.status === "discontinued";
-    if (aOut !== bOut) return aOut ? 1 : -1;
-    const d = severity(a.measure) - severity(b.measure);
-    if (d !== 0) return d;
-    return a.sku.localeCompare(b.sku);
-  });
-}
-
-/** Ascending = worst first, whatever the kind. */
-function severity(m: RowMeasure): number {
-  switch (m.kind) {
-    case "ratio":
-      // A reference of 0 makes the deficit uncomputable, not infinite: the row
-      // sinks within its group rather than dividing by zero.
-      return m.reference > 0 ? m.value / m.reference : Number.POSITIVE_INFINITY;
-    case "magnitude":
-      return -Math.abs(m.value);
-    case "recency":
-      return -m.endedDaysAgo;
-    case "none":
-      return 0;
-  }
-}
-
-const marginsFor = (rows: Product[]): Record<string, number> =>
-  Object.fromEntries(rows.map((p) => [p.sku, Math.round(marginPct(p) * 10) / 10]));
 
 /** Fresh margins for SKUs after a write, so a revealed Margin column never goes
  *  stale (a cleared sale flips a negative margin positive). Server-computed. */
@@ -331,8 +183,6 @@ const marginPatch = (skus: string[]): Record<string, number> => {
   return out;
 };
 
-const money = (n: number) => `$${n.toFixed(2)}`;
-
 // ── Provider tool schemas ──────────────────────────────────────────────────
 /**
  * The specs, and the schemas generated from them. `TOOL_SPECS` is the single
@@ -340,7 +190,7 @@ const money = (n: number) => `$${n.toFixed(2)}`;
  * views of this one object, so a schema cannot promise a contract the parser
  * does not keep. See `tool-args.ts`.
  */
-export const TOOL_SPECS = toolSpecs(METRICS, SELECTORS);
+export const TOOL_SPECS = toolSpecs(METRICS, SELECTORS, FILTER_PRESETS, COMPARE_FIELDS, COMPARE_OPS);
 export const TOOLS: ProviderTool[] = buildProviderTools(TOOL_SPECS);
 
 // ── Governance results ─────────────────────────────────────────────────────
@@ -393,7 +243,8 @@ export function govern(
     case "inspect_product":
       return governInspect(id, args);
     case "filter_view":
-      return governFilter(id, args, turnMessage);
+    case "filter_compare":
+      return governFilter(id, name, args, turnMessage);
     case "update_price":
       return governFieldWrite(id, "update_price", "price", args);
     case "adjust_stock":
@@ -482,11 +333,19 @@ function governQuery(id: string, args: ParsedArgs, turnMessage?: string): Govern
     return invalid(id, "query_products", args, `Unknown metric "${String(args.metric)}".`);
   const read = readMetric(args.metric, args.threshold);
   if ("error" in read) return invalid(id, "query_products", args, read.error);
-  const { rows, phrase } = read;
+  const { rows, label: phrase } = read;
   const targetIds = rows.map((p) => p.sku);
   const revealMargin = args.metric === "negative_margin";
+  // A margin question narrows the table to the rows it is about, and the filter
+  // it sets is a real FilterState — the same one the bar would show for the
+  // `negative_margin` chip. This tool writes no view state the human cannot
+  // read off the bar and clear with one click.
   const effect: ViewEffect = revealMargin
-    ? { reveal: ["margin"], margins: marginsFor(rows), filter: { skus: targetIds } }
+    ? {
+        reveal: ["margin"],
+        margins: marginsFor(rows),
+        filter: resolveFilter({ kind: "preset", preset: "negative_margin" }),
+      }
     : {};
   // Kept only if it differs from what we ran. A subtitle that repeats the
   // header teaches the human to stop reading the subtitle.
@@ -641,72 +500,94 @@ function governInspect(id: string, args: ParsedArgs): Governed {
 }
 
 /**
- * Filter the table to a metric. Split across the same two channels as
- * `governQuery`, and for the same reason.
+ * The two filter tools, governed as one — because they set ONE thing.
  *
- * This tool used to return `{ filtered, count, skus }`: a raw enum token, a
- * number, and thirteen SKUs. The model had to turn `below_reorder` into English
- * on its own, and with no wording to copy it reached for the nearest phrasing it
- * had — the example in the system prompt — and answered "13 products are selling
- * below cost" over a run of `below_reorder`. Same class of failure the payload
- * split closed for `query_products`, still open here because the label was
- * missing. So the label ships, the SKUs do not, and the rows go to the client.
+ * `filter_view` names a group; `filter_compare` states a threshold. They differ
+ * only in how the `FilterState` is spelled, and after that line they are the
+ * same operation: resolve the criterion, ship the effect, hand the model a
+ * count and a label. There is no second code path for the model, and no code
+ * path here at all that the human's own filter bar does not also take — the bar
+ * posts a `FilterState` and the server runs `filterEffect` over it, exactly as
+ * this does. Neither party has a channel the other lacks.
+ *
+ * The label ships and the SKUs do not. This tool used to return
+ * `{ filtered, count, skus }`: a raw enum token, a number, and thirteen SKUs.
+ * The model had to turn `below_reorder` into English on its own, and with no
+ * wording to copy it reached for the nearest phrasing it had — the example in
+ * the system prompt — and answered "13 products are selling below cost" over a
+ * run of `below_reorder`.
  */
-function governFilter(id: string, args: ParsedArgs, turnMessage?: string): Governed {
-  const filter = args.filter;
-  const revealMargin = args.reveal_margin === true;
+function governFilter(
+  id: string,
+  tool: string,
+  args: ParsedArgs,
+  turnMessage?: string,
+): Governed {
+  const state = filterStateFrom(tool, args);
+  const effect = filterEffect(state);
+  const resolved = effect.filter!;
+  const cleared = state.kind === "none";
 
-  if (filter === "none") {
-    // Clearing the filter still resolves a group — everything — and the model
-    // still has to name it. No render payload: the point of this branch is
-    // removing a selection, not listing one. `rendered` stays true because the
-    // table below is what the human is now looking at.
-    const all = allProducts();
-    return {
-      kind: "safe",
-      event: mk(id, "filter_view", "safe", "ok", `Cleared the filter — showing all ${all.length} products.`, args, []),
-      effect: { filter: { skus: null }, ...(revealMargin ? { reveal: ["margin"], margins: marginsFor(all) } : {}) },
-      outcome: modelOnly({
-        count: all.length,
-        criterion: "none",
-        criterionLabel: "products in the catalog, unfiltered",
-        rendered: true,
-      }),
+  const summary = cleared
+    ? `Cleared the filter — showing all ${resolved.count} products.`
+    : `Filtered to ${resolved.count} ${resolved.label}${effect.reveal ? ", Margin revealed" : ""}.`;
+
+  const outcome: ToolOutcome = {
+    // The criterion in words, built by the server from what it executed. No
+    // sku, no row — the same guarantee `query_products` makes.
+    modelPayload: {
+      count: resolved.count,
+      criterion: filterToken(state),
+      criterionLabel: resolved.label,
+      rendered: true,
+    },
+  };
+
+  // Clearing renders nothing: the point of that branch is removing a selection,
+  // not listing one. `rendered` stays true either way, because the table below
+  // is what the human is now looking at.
+  if (!cleared) {
+    // Same gate as `governQuery`, and the same source: this turn's message.
+    const userIntent = subtitleIntent(cleanIntent(turnMessage), resolved.label);
+    outcome.renderPayload = {
+      component: "product_list",
+      count: resolved.count,
+      criterionLabel: resolved.label,
+      // Measured and ordered by the criterion this call ran, so the same
+      // component reads a filter result and a query result alike.
+      data: measuredRows(filterCriterion(state)),
+      ...(userIntent ? { userIntent } : {}),
     };
   }
 
-  if (!isMetric(filter))
-    return invalid(id, "filter_view", args, `Unknown filter "${String(filter)}".`);
-  const read = readMetric(filter, args.threshold);
-  if ("error" in read) return invalid(id, "filter_view", args, read.error);
-  const { rows, phrase } = read;
-  const targetIds = rows.map((p) => p.sku);
-  // Same gate as `governQuery`, and the same source: this turn's message.
-  const userIntent = subtitleIntent(cleanIntent(turnMessage), phrase);
   return {
     kind: "safe",
-    event: mk(id, "filter_view", "safe", "ok", `Filtered to ${rows.length} ${phrase}${revealMargin ? ", Margin revealed" : ""}.`, args, targetIds),
-    effect: { filter: { skus: targetIds }, ...(revealMargin ? { reveal: ["margin"], margins: marginsFor(rows) } : {}) },
-    outcome: {
-      // The criterion in words, built by the server from what it executed. No
-      // sku, no row — the same guarantee `query_products` makes.
-      modelPayload: {
-        count: rows.length,
-        criterion: filter,
-        criterionLabel: phrase,
-        rendered: true,
-      },
-      // Same shape of data as a query — measured and ordered by the criterion
-      // this call ran — so the same component reads it.
-      renderPayload: {
-        component: "product_list",
-        count: rows.length,
-        criterionLabel: phrase,
-        data: measuredRows(read),
-        ...(userIntent ? { userIntent } : {}),
-      },
-    },
+    event: mk(id, tool, "safe", "ok", summary, args, resolved.skus ?? []),
+    effect,
+    outcome,
   };
+}
+
+/**
+ * The tool's arguments as a `FilterState`.
+ *
+ * No validation and no refusal branch, deliberately: `parseArgs` has already
+ * run against the spec, so `preset` is a member of its enum, `field` and `op`
+ * are members of theirs, and `value` is a number at or above zero. There is
+ * nothing left for this function to reject — which is the point of validating
+ * at the edge instead of in eight tool bodies.
+ */
+function filterStateFrom(tool: string, args: ParsedArgs): FilterState {
+  if (tool === "filter_compare")
+    return {
+      kind: "compare",
+      field: args.field as CompareField,
+      op: args.op as CompareOp,
+      value: args.value as number,
+    };
+  return args.preset === "none"
+    ? NO_FILTER
+    : { kind: "preset", preset: args.preset as FilterPreset };
 }
 
 // ── Reversible field writes (radius decides the tier) ─────────────────────
@@ -901,7 +782,9 @@ function gateFrom(
     description: plan.description,
     targetIds: plan.targetIds,
     items: plan.items,
-    effect: { filter: { skus: null } },
+    // The gate clears the filter so every "could pass" row is visible while the
+    // human decides — approving targets you cannot see is not approving.
+    effect: { filter: resolveFilter(NO_FILTER) },
   };
   return {
     kind: "gate",
@@ -970,7 +853,7 @@ export function executeGate(
       ...mk(callId, tool, "gate", "ok", okSummary + suffix, parsedArgs.args, allowed),
       excluded,
     },
-    effect: { mutations, filter: { skus: null }, margins: marginPatch(allowed) },
+    effect: { mutations, margins: marginPatch(allowed) },
     outcome: modelOnly({ approved: allowed.length, excluded: excluded.length, skus: allowed }),
   };
 }

@@ -32,14 +32,16 @@ export const GUIDED_STEPS: GuidedStep[] = [
     tier: "read · runs on its own",
     prompt: "How many products are selling below cost? Reveal the margin column.",
     note: "**Read.** The agent ran without asking. It also revealed a column that wasn't on screen — margin isn't stored, it's computed server-side from cost and effective price.",
-    fallback: { tool: "filter_view", args: { filter: "negative_margin", reveal_margin: true } },
+    // The margin column comes WITH the criterion — `negative_margin` reveals it,
+    // and there is no `reveal_margin` argument any more. See `filterEffect`.
+    fallback: { tool: "filter_view", args: { preset: "negative_margin" } },
   },
   {
     label: "Show me what's causing it",
     tier: "read · runs on its own",
     prompt: "What is causing those negative margins? Filter the table to the products still on an expired sale.",
     note: "**Still a read.** What you see changed. What exists didn't.",
-    fallback: { tool: "filter_view", args: { filter: "expired_sale" } },
+    fallback: { tool: "filter_view", args: { preset: "expired_sale" } },
   },
   {
     label: "Raise the price on the SD Card Case",

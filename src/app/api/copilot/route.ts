@@ -15,13 +15,16 @@
  */
 
 import { streamChatResilient } from "@/lib/engine/resilient";
-import { govern, executeGate, executeUndo, parseUndo, METRIC_SPEC, TOOLS } from "@/lib/engine/tools";
+import { govern, executeGate, executeUndo, parseUndo, METRIC_PHRASE, TOOLS } from "@/lib/engine/tools";
+import { currentViewLine, parseFilterState } from "@/lib/engine/filter-spec";
+import { filterEffect, resolveFilter } from "@/lib/engine/filter";
 import { putGate, takeGate } from "@/lib/engine/gate-store";
 import { rateLimit, clientIp } from "@/lib/engine/rate-limit";
-import { resetCatalog } from "@/lib/scenario/catalog";
+import { allProducts, resetCatalog } from "@/lib/scenario/catalog";
 import type {
   ChatMessage,
   ErrorReason,
+  FilterState,
   RenderPayload,
   StreamFrame,
   ToolOutcome,
@@ -47,13 +50,14 @@ const METRIC_VOCABULARY = (
     ["status axis", ["active", "discontinued"]],
     ["sale axis", ["on_sale", "expired_sale"]],
     ["stock axis", ["below_reorder", "stock_below"]],
+    ["web store", ["hidden"]],
     ["other", ["negative_margin", "all"]],
   ] as const
 )
   .map(
     ([axis, metrics]) =>
       `    · ${axis}: ` +
-      metrics.map((m) => `${m} = ${METRIC_SPEC[m].phrase}`).join(" · "),
+      metrics.map((m) => `${m} = ${METRIC_PHRASE[m]}`).join(" · "),
   )
   .join("\n");
 
@@ -68,7 +72,11 @@ ${METRIC_VOCABULARY}
   Match the user's words to the metric whose meaning above covers them, and pick that metric only. "How many active products?" → active (STATUS), never on_sale.
   THE STOCK AXIS HAS TWO METRICS AND THEY ARE NOT INTERCHANGEABLE. A question naming a NUMBER of units is stock_below, and you must pass that number as threshold: "less than 50 in stock", "under 50 units", "stock below 50", "menos de 50 en stock", "con menos de 50 unidades" → stock_below with threshold: 50. Only a question with NO number — "running low", "which need reordering", "below the reorder point", "hay que reponer" — is below_reorder. Never answer a numbered question with below_reorder: it compares each product to its own reorder point, so it does not contain the user's number at all.
 - inspect_product(sku): show the human ONE product's full record. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?"). You get its name, sku and status — never its price, stock or margin, because the record is already on screen. Write one sentence of context and NEVER state a number you were not given.
-- filter_view(filter, reveal_margin?): filter the table; filter ∈ those metrics or "none".
+
+Filtering the table (the human has these same two controls in a filter bar above the table, and can clear any filter you set with one click):
+- filter_view(preset): filter the table to a NAMED group. preset ∈ the metric names above, or "none" to clear the filter and show everything.
+- filter_compare(field, op, value): filter the table by a NUMBER. Use this for any question that names a quantity — "less than 50 in stock", "under $20", "exactly 0 in stock". field ∈ stock, effective_price. op ∈ lt, lte, gt, gte, eq. Copy the number from the question; never invent one.
+  Only ONE filter is active at a time: a new one replaces the last.
 
 Reversible writes (run immediately, one product, undoable):
 - update_price(sku, price)
@@ -86,13 +94,25 @@ Rules:
 - Name the group by copying the tool result's own "criterionLabel" string into your sentence, word for word, together with its "count". That label is the criterion the system actually ran. Then STOP: never append a clause that explains, restates or equates it with something else — no "meaning ...", no "which means ...", no "i.e.", and never the user's own phrasing. Your paraphrase and their wording both name a criterion the system did not run. The shape, written with placeholders that must never appear literally in an answer: a result {"count": N, "criterionLabel": "<LABEL>"} becomes exactly "N <LABEL>." — substitute the two values, append nothing. If a result has no "criterionLabel", describe it only from the fields that result actually contains.
 - Keep answers to 1-3 short sentences. No markdown headings, no bullet dumps.
 - For a single-product price/stock/visibility change, use the reversible tool with its sku.
-- To LIST or COUNT discontinued products, use a READ (query_products or filter_view with "discontinued"). discontinue_products is the DESTRUCTIVE write that MARKS products discontinued — use it only to actually discontinue, never to look at ones that already are.`;
+- To LIST or COUNT discontinued products, use a READ (query_products or filter_view with "discontinued"). discontinue_products is the DESTRUCTIVE write that MARKS products discontinued — use it only to actually discontinue, never to look at ones that already are.
+- THE "Current view:" LINE BELOW IS THE SYSTEM'S OWN RECORD OF WHAT THE TABLE IS SHOWING RIGHT NOW. Never state what is filtered, how many rows are visible, or that nothing is filtered, except by copying it. Do not answer from memory of an earlier turn: the human has the same filter controls you do and may have changed or cleared the view since. If they ask to see everything, call filter_view with preset "none".`;
 
 const MAX_ROUNDS = 4;
 
 interface Body {
   messages?: Array<{ role: "user" | "assistant"; content: string }>;
-  action?: "approve" | "undo";
+  /**
+   * The `FilterState` the client is currently holding — sent on EVERY request,
+   * beside `messages` and for the same reason. The client stores it as an
+   * opaque token and never interprets it; this server is the only thing that
+   * evaluates it. Round-tripping the criterion rather than parking it in a
+   * module variable keeps one source of truth and survives a request landing on
+   * a different instance.
+   */
+  filter?: unknown;
+  action?: "approve" | "undo" | "filter";
+  /** `action:"filter"` only — the state the human's filter bar wants applied. */
+  setFilter?: unknown;
   gateId?: string;
   excludedIds?: string[];
   undo?: UndoSpec;
@@ -130,10 +150,16 @@ export async function POST(req: Request) {
     content: m.content,
   }));
 
-  // Rate limit only the model-consuming path — a fresh turn. Approve/undo are
-  // pure governance (no provider call), so a visitor mid-decision is never
-  // blocked from finishing what they started.
-  const isModelTurn = body.action !== "approve" && body.action !== "undo";
+  // What the client says is on screen. Parsed here, once, so every path below
+  // reads the same criterion — and so a malformed token degrades to "no filter"
+  // rather than to a criterion this server would then report as fact.
+  const currentFilter = parseFilterState(body.filter);
+
+  // Rate limit only the model-consuming path — a fresh turn. Approve, undo and
+  // filter are pure governance (no provider call), so neither a visitor
+  // mid-decision nor one clicking a filter chip is ever blocked.
+  const isModelTurn =
+    body.action !== "approve" && body.action !== "undo" && body.action !== "filter";
   if (isModelTurn) {
     const { ok, retryAfter } = rateLimit(clientIp(req));
     if (!ok) {
@@ -164,7 +190,9 @@ export async function POST(req: Request) {
           ? () => runGateDecision(body, emit)
           : body.action === "undo"
             ? () => runUndo(body, emit)
-            : () => runTurn(history, emit, fallback);
+            : body.action === "filter"
+              ? () => runFilter(body, emit)
+              : () => runTurn(history, emit, fallback, currentFilter);
 
       run()
         .catch((err: unknown) => {
@@ -235,10 +263,26 @@ function turnMessage(history: ChatMessage[]): string | undefined {
  *   - else (free input, nothing to fall back to) → surface the typed error, for
  *     the client to reframe (a pause) or report (a real fault).
  */
-async function runTurn(history: ChatMessage[], emit: Emit, fallback?: Fallback): Promise<void> {
+async function runTurn(
+  history: ChatMessage[],
+  emit: Emit,
+  fallback?: Fallback,
+  filter: FilterState = { kind: "none" },
+): Promise<void> {
   if (history.length <= 1) resetCatalog();
 
-  const messages: ChatMessage[] = [{ role: "system", content: SYSTEM_PROMPT }, ...history];
+  // The view state, resolved fresh and appended to the system message. This is
+  // the whole of R07: before it, the filter lived in a `useState` in the browser
+  // and the tool results that produced it died with their turn, so a model asked
+  // "what is the table showing?" on the turn AFTER filtering had nothing to read
+  // and denied its own filter existed. The line is built by `currentViewLine`
+  // from the same `describeFilter` that draws the chip in the bar, so the model
+  // reads the sentence the human is looking at.
+  const view = currentViewLine(resolveFilter(filter), allProducts().length);
+  const messages: ChatMessage[] = [
+    { role: "system", content: `${SYSTEM_PROMPT}\n\n${view}` },
+    ...history,
+  ];
   const render = renderSlot(emit);
   // Read once, here, from the message that OPENED this turn. Every render in the
   // turn is attributed to this sentence and to no other. See `turnMessage`.
@@ -441,6 +485,25 @@ async function runGateDecision(body: Body, emit: Emit): Promise<void> {
   emit({ type: "done" });
 }
 
+/**
+ * The human's own filter, applied. No model, no tool call, no card in the log.
+ *
+ * This is the path the filter bar posts to, and it is deliberately the SAME
+ * three lines the filter tools run: parse a `FilterState`, hand it to
+ * `filterEffect`, emit what comes back. The human and the model are not two
+ * subsystems that agree — they are one resolver with two callers, which is the
+ * only version of "the agent uses the human's controls" that cannot drift.
+ *
+ * What legitimately differs is the RECORD, not the state. A tool call leaves a
+ * card in the copilot log because the log is the account of what the agent did;
+ * a human clicking a chip leaves no card, because they were there. Both leave
+ * the same chip in the bar, and the bar never says which of them set it.
+ */
+async function runFilter(body: Body, emit: Emit): Promise<void> {
+  emit({ type: "effect", effect: filterEffect(parseFilterState(body.setFilter)) });
+  emit({ type: "done" });
+}
+
 /** Reverse a reversible write. Human-only signal. Still server-resolved: a
  *  stale target (value drifted) is surfaced, not overwritten blindly. */
 async function runUndo(body: Body, emit: Emit): Promise<void> {
@@ -481,12 +544,31 @@ const KNOWN_TOOLS = [
   "update_price",
   "adjust_stock",
   "set_web_visible",
-  "filter_view",
+  "filter_compare", // before filter_view: "filter_view" is not a substring of it,
+  "filter_view", //    but keeping the more specific name first is the safer order
   "query_products",
 ] as const;
-const KNOWN_METRICS = ["on_sale", "expired_sale", "active", "discontinued", "below_reorder", "stock_below", "negative_margin", "all"] as const;
+const KNOWN_METRICS = [
+  "below_reorder",
+  "negative_margin",
+  "expired_sale",
+  "on_sale",
+  "hidden",
+  "active",
+  "discontinued",
+  "stock_below",
+  "all",
+] as const;
+const KNOWN_OPS = ["lte", "gte", "lt", "gt", "eq"] as const; // longest first
 
-/** Recover a tool call the model wrote as JSON text instead of structure. */
+/**
+ * Recover a tool call the model wrote as JSON text instead of structure.
+ *
+ * The heuristics only ever produce arguments the SPEC declares; anything they
+ * get wrong is refused by `parseArgs` at the edge like any other bad call. A
+ * salvage that guessed an argument into existence would be worse than no
+ * salvage — it would be the server authoring a tool call and then executing it.
+ */
 function salvageToolCall(text: string): { name: string; args: Record<string, unknown> } | null {
   const t = text.trim();
   if (!t.startsWith("{")) return null;
@@ -504,15 +586,25 @@ function salvageToolCall(text: string): { name: string; args: Record<string, unk
     }
   }
   if (Object.keys(args).length === 0) {
-    const metric = KNOWN_METRICS.find((m) => t.includes(m));
-    if (metric) args[name === "filter_view" || name === "discontinue_products" ? "filter" : "metric"] = metric;
-    if (/reveal|margin/i.test(t)) args.reveal_margin = true;
-    // A threshold metric is nothing without its number. Recover it from the same
-    // text rather than let the read resolve to a criterion with a hole in it —
-    // and if there is no number, the read is refused as invalid, not defaulted.
-    if (metric === "stock_below") {
-      const n = t.match(/\d+(?:\.\d+)?/);
-      if (n) args.threshold = Number(n[0]);
+    const number = t.match(/\d+(?:\.\d+)?/);
+    if (name === "filter_compare") {
+      // All three are required, so a comparison missing any of them is refused
+      // rather than completed with a default: a filter the human did not ask
+      // for is a worse outcome than a re-ask.
+      const field = t.includes("effective_price") || /price/i.test(t) ? "effective_price" : "stock";
+      const op = KNOWN_OPS.find((o) => t.includes(`"${o}"`));
+      if (op) args.op = op;
+      args.field = field;
+      if (number) args.value = Number(number[0]);
+    } else {
+      const metric = KNOWN_METRICS.find((m) => t.includes(m));
+      if (metric)
+        args[name === "filter_view" ? "preset" : name === "discontinue_products" ? "filter" : "metric"] =
+          metric;
+      // A threshold metric is nothing without its number. Recover it from the
+      // same text rather than let the read resolve to a criterion with a hole
+      // in it — and if there is no number, the read is refused, not defaulted.
+      if (metric === "stock_below" && number) args.threshold = Number(number[0]);
     }
   }
   return { name, args };
