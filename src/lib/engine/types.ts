@@ -292,8 +292,8 @@ export interface ToolOutcome<T = unknown> {
  * `negative_margin` returned the same products and measures a signed
  * percentage; `discontinued` measures nothing at all. The old component drew a
  * stock bar for all three, so a `negative_margin` result carried a bar against
- * a dimension its predicate never touched, and a `stock_below(50)` result drew
- * one against `reorderPoint` — a comparison nobody had run.
+ * a dimension its predicate never touched, and a `stock lt 50` result drew one
+ * against `reorderPoint` — a comparison nobody had run.
  *
  * So the kind travels with the data, and each kind carries ONLY the fields it
  * needs. There are no raw fields here to re-derive from: the client cannot
@@ -414,8 +414,10 @@ export interface GatePreview {
   description: string;
   targetIds: string[]; // rows to spotlight while the human decides
   items: GateItem[];
-  /** What WILL run on approve. The human approves what the server will execute. */
-  effect: ViewEffect;
+  // No `effect`. What runs on approve is resolved by `executeGate` at approval
+  // time, against the exclusions the human made — it cannot exist yet, and a
+  // field claiming to hold it would be a prediction presented as the contract.
+  // The `items` above ARE the promise: the human approves exactly those rows.
 }
 
 // ── Layer 2 output: frames the client receives ─────────────────────────────

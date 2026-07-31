@@ -4,7 +4,16 @@ import type { ColumnKey } from "@/lib/engine/types";
 import { cn } from "@/lib/cn";
 
 export interface TableView {
-  /** null → show all rows. */
+  /**
+   * The rows to show, IN ORDER — `null` shows every row in catalog order.
+   *
+   * The order is the criterion's, resolved server-side by the same ranking that
+   * orders a rendered list (`sortByMeasure`): the oldest expired sale first, the
+   * deepest stock deficit first. This component does not sort, and does not fall
+   * back to its own `rows` order while a filter is on — a table filtered by a
+   * criterion is sorted by that criterion, and which end is "worst" is a fact
+   * about the criterion that only the server holds.
+   */
   filterSkus: string[] | null;
   /**
    * Columns beyond the base set, for the criterion currently applied. The whole
@@ -51,11 +60,20 @@ export function ProductTable({
   rows: PublicProduct[];
   view: TableView;
 }) {
-  const filter = view.filterSkus ? new Set(view.filterSkus) : null;
   const targets = new Set(view.targetIds);
   const changed = new Set(view.changedIds);
   const shown = new Set(view.reveal);
   const extra = REVEAL_ORDER.filter((c) => shown.has(c));
+
+  // Filtered: walk the server's SKU list, so both WHICH rows and IN WHAT ORDER
+  // come from the resolved criterion. Unfiltered: the catalog, as it stands.
+  // A SKU with no row is dropped rather than rendered empty — it would mean the
+  // resolution and the row set disagree, and an invented blank row is the worse
+  // of the two ways to say so.
+  const byId = new Map(rows.map((p) => [p.sku, p]));
+  const visible = view.filterSkus
+    ? view.filterSkus.flatMap((sku) => byId.get(sku) ?? [])
+    : rows;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
@@ -84,10 +102,7 @@ export function ProductTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((p) => {
-            const hidden = filter ? !filter.has(p.sku) : false;
-            if (hidden) return null;
-
+          {visible.map((p) => {
             const isTarget = targets.has(p.sku);
             const isChanged = changed.has(p.sku);
             const wasPrice = view.priceWas[p.sku];

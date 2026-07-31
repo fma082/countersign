@@ -44,7 +44,22 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
   // over a stale state value.
   const filterRef = useRef<ResolvedFilter | null>(null);
   filterRef.current = filter;
-  const filterSkus = filter?.skus ?? null;
+  /**
+   * A gate is open, so the filter is SUSPENDED — not cleared.
+   *
+   * The table shows every row while the human decides, because approving
+   * targets you cannot see is not approving. The criterion stays in `filter`
+   * the whole time and comes back on the way out: re-resolved by the server
+   * after an approval, un-suspended as-is after a rejection.
+   *
+   * It used to be `setFilter(null)` — the human's view destroyed to avoid
+   * lying about it, with no way back. A criterion can be suspended and re-run;
+   * the frozen SKU list it replaced could only be thrown away.
+   */
+  const [gateHeld, setGateHeld] = useState(false);
+  const gateHeldRef = useRef(false);
+  gateHeldRef.current = gateHeld;
+  const filterSkus = gateHeld ? null : (filter?.skus ?? null);
   const [margins, setMargins] = useState<Record<string, number>>({});
   const [targetIds, setTargetIds] = useState<string[]>([]);
   const [changedIds, setChangedIds] = useState<string[]>([]);
@@ -56,7 +71,15 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     // Stored whole and verbatim. The SKUs draw the table, the label draws the
     // chip, and the state goes back to the server on the next request — three
     // uses, none of which involves interpreting the criterion.
-    if (effect.filter !== undefined) setFilter(effect.filter);
+    //
+    // A resolved filter arriving is also what ends a gate's suspension: the
+    // approval's own request carries the restored criterion back, re-resolved
+    // after its writes, so the view returns and the hold lifts together rather
+    // than in two steps the human would see flicker.
+    if (effect.filter !== undefined) {
+      setFilter(effect.filter);
+      setGateHeld(false);
+    }
     if (effect.margins) setMargins((prev) => ({ ...prev, ...effect.margins }));
 
     if (effect.mutations?.length) {
@@ -93,13 +116,23 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     () => ({
       onEffect: applyEffect,
       onGateOpen: (ids) => {
-        // Reveal every targeted row while the human decides — clear any filter a
-        // prior read left on, so all "could pass" rows are visible at once.
-        setFilter(null);
+        // Reveal every targeted row while the human decides — suspend any filter
+        // a prior read left on, so all "could pass" rows are visible at once.
+        setGateHeld(true);
         setTargetIds(ids);
       },
-      onGateClose: () => setTargetIds([]),
-      getFilter: () => filterRef.current?.state ?? NO_FILTER,
+      onGateClose: (restored) => {
+        setTargetIds([]);
+        // A rejection ran nothing, so the resolution the server sent before the
+        // gate is still current — un-suspend it. An approval's restored view
+        // arrives re-resolved in an effect frame; `applyEffect` lifts the hold.
+        if (!restored) setGateHeld(false);
+      },
+      // What the TABLE is showing, which during a hold is everything. Reporting
+      // the suspended criterion here would put a filter in the model's
+      // `Current view:` line that the human is not looking at.
+      getFilter: () =>
+        gateHeldRef.current ? NO_FILTER : (filterRef.current?.state ?? NO_FILTER),
     }),
     [applyEffect],
   );
@@ -161,7 +194,11 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
   const resetScenario = useCallback(() => {
     copilotRef.current.reset();
     setRows(initialRows);
+    // The filter is view state like any other and a reset returns the whole
+    // view to pristine — including the gate's hold, which would otherwise
+    // outlive the gate that set it and blank a filter applied after the reset.
     setFilter(null);
+    setGateHeld(false);
     setMargins({});
     setTargetIds([]);
     setChangedIds([]);
@@ -183,8 +220,10 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
     filterSkus,
     // Derived, not accumulated. There is no `revealedColumns` state in this
     // component to fall out of step with the criterion — the server sends the
-    // whole set with every resolution and this reads it.
-    reveal: filter?.reveal ?? [],
+    // whole set with every resolution and this reads it. A suspended criterion
+    // reveals nothing: the columns follow the rows, and during a hold the rows
+    // are everything.
+    reveal: gateHeld ? [] : (filter?.reveal ?? []),
     margins,
     targetIds,
     changedIds,
@@ -193,8 +232,9 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
 
   // The server's own count, not `filterSkus.length`. Same number today, but one
   // of them is a fact the resolver reported and the other is a length the client
-  // measured — and the readout has to say what the resolver said.
-  const shownCount = filter?.count ?? rows.length;
+  // measured — and the readout has to say what the resolver said. Under a hold
+  // the table is showing every row, and the readout says so.
+  const shownCount = gateHeld ? rows.length : (filter?.count ?? rows.length);
   // The view is not the human's to move while a turn is resolving one, or while
   // a gate is holding every target on screen for them to look at.
   const busy = isBusy(status) || isGateOpen(status);
@@ -229,7 +269,12 @@ export function ScenarioShell({ initialRows }: { initialRows: PublicProduct[] })
         </header>
         {/* Between the header and the scroll container, so it never competes
             with the table's sticky thead. */}
-        <FilterBar filter={filter} onApply={copilot.applyFilter} disabled={busy} />
+        <FilterBar
+          filter={filter}
+          held={gateHeld ? filter : null}
+          onApply={copilot.applyFilter}
+          disabled={busy}
+        />
         <ProductTable rows={rows} view={view} />
       </main>
 

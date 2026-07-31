@@ -51,8 +51,25 @@ export type LogItem =
 
 export interface CopilotCallbacks {
   onEffect(effect: ViewEffect): void;
+  /** A gate opened: spotlight these targets and SUSPEND the view, so every row
+   *  that could pass is on screen. Approving targets you cannot see is not
+   *  approving. What was suspended comes back through `onGateClose`. */
   onGateOpen(targetIds: string[]): void;
-  onGateClose(): void;
+  /**
+   * The gate closed, one way or another.
+   *
+   * `restored` says who is putting the suspended view back. An APPROVAL ran
+   * writes, so the criterion may now select different rows than it did when the
+   * gate opened — the server re-resolves it after executing and the view
+   * arrives in an `effect` frame (`true`). A REJECTION ran nothing at all, so
+   * the resolution the server sent before the gate is still exactly current and
+   * the client may simply un-suspend it (`false`).
+   *
+   * That asymmetry is the point of the criterion being a criterion: the old
+   * frozen `string[]` could not be re-resolved, which is why the filter used to
+   * be wiped at the gate and never came back.
+   */
+  onGateClose(restored: boolean): void;
   /**
    * The `FilterState` currently on screen, read at request time.
    *
@@ -130,6 +147,15 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
   // The single active undo (there is at most one) and the item being undone.
   const activeUndoRef = useRef<{ itemId: string; spec: UndoSpec } | null>(null);
   const pendingUndoItemRef = useRef<string | null>(null);
+
+  /**
+   * The criterion the open gate suspended — read off the view the instant
+   * before the gate clears it, and handed back to the server with the approval.
+   *
+   * Opaque here, like `getFilter`'s value: nothing in this file reads a field
+   * of it or decides anything from it. It is carried, not interpreted.
+   */
+  const heldFilterRef = useRef<FilterState | null>(null);
 
   // ── log mutators ──────────────────────────────────────────────────────────
   const stopStreaming = useCallback(() => {
@@ -234,6 +260,9 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
               ...prev,
               { id: frame.gate.id, kind: "gate", gate: frame.gate, resolved: "pending" },
             ]);
+            // Read BEFORE the gate suspends the view — one line later this
+            // returns the unfiltered state the human is about to be shown.
+            heldFilterRef.current = cbRef.current.getFilter();
             cbRef.current.onGateOpen(frame.gate.targetIds);
             break;
           }
@@ -406,6 +435,7 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
     historyRef.current = [];
     activeUndoRef.current = null;
     pendingUndoItemRef.current = null;
+    heldFilterRef.current = null;
     dispatch({ kind: "reset" });
   }, []);
 
@@ -432,10 +462,16 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
       closeActiveUndo("Window closed by a gate decision."); // a decision spends the window
       resolveGateItem("approved", excludedIds.length);
       const gateId = gate.id;
+      const restoreFilter = heldFilterRef.current;
+      heldFilterRef.current = null;
       setGate(null);
-      cbRef.current.onGateClose();
+      // `true`: the restored view is the server's to send. It rides this same
+      // request, resolved AFTER the writes land, so the criterion comes back
+      // selecting the rows it selects now — not the ones it selected before the
+      // sweep the human just approved.
+      cbRef.current.onGateClose(true);
       dispatch(excludedIds.length ? { kind: "approvePartial", excludedIds } : { kind: "approve" });
-      void consume({ action: "approve", gateId, excludedIds });
+      void consume({ action: "approve", gateId, excludedIds, restoreFilter });
     },
     [gate, consume, closeActiveUndo, resolveGateItem],
   );
@@ -444,8 +480,12 @@ export function useCopilot(callbacks: CopilotCallbacks, options: CopilotOptions 
     if (!gate) return;
     closeActiveUndo("Window closed by a gate decision.");
     resolveGateItem("rejected", 0);
+    heldFilterRef.current = null;
     setGate(null);
-    cbRef.current.onGateClose();
+    // Nothing ran, so nothing needs re-resolving — and there is no request on
+    // this path to carry it anyway. The client un-suspends what the server had
+    // already resolved.
+    cbRef.current.onGateClose(false);
     dispatch({ kind: "reject" });
   }, [gate, closeActiveUndo, resolveGateItem]);
 

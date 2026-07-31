@@ -10,7 +10,6 @@ import {
 } from "@/lib/scenario/seed-products";
 import type { PublicProduct } from "@/lib/scenario/catalog";
 import type { GatePreview, ToolEvent } from "@/lib/engine/types";
-import { NO_FILTER, describeFilter } from "@/lib/engine/filter-spec";
 import { ProductTable, type TableView } from "@/components/product-table";
 import { StatusBadge } from "@/components/copilot/status-badge";
 import { ToolCard } from "@/components/copilot/tool-card";
@@ -45,19 +44,6 @@ const gate: GatePreview = {
     detail: `${money(p.salePrice as number)} → ${money(p.price)}`,
     warn: marginPct(p) < 0,
   })),
-  // A still image of the gate, so the criterion behind "show everything" is the
-  // empty one, resolved to the whole catalog. The label still comes from
-  // `describeFilter` — a still frame is not a licence to write the sentence a
-  // second time, and `filter-spec` is pure precisely so this import is free.
-  effect: {
-    filter: {
-      state: NO_FILTER,
-      skus: null,
-      label: describeFilter(NO_FILTER),
-      count: PRODUCTS.length,
-      reveal: [],
-    },
-  },
 };
 
 const toolEvent: ToolEvent = {

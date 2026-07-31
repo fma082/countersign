@@ -59,16 +59,18 @@ interface ToolSpec {
 }
 
 /**
- * Deliberately NOT in this table: whether `threshold` is required. It is
- * required for `stock_below` and meaningless for every other metric, which is a
- * fact about the metric and not about the argument's shape. `readMetric` owns
- * it and refuses with a message that names the metric. The rule of the split:
- * this layer decides whether a value is WELL-FORMED, the tool body decides
- * whether it is MEANINGFUL for what was asked.
+ * The rule of the split, for anything added here later: this layer decides
+ * whether a value is WELL-FORMED, the tool body decides whether it is
+ * MEANINGFUL for what was asked.
+ *
+ * `metrics` is one list serving two slots — `query_products.metric` and the
+ * `where` / `filter` selectors on the writes. It reads as a single parameter
+ * because it IS one vocabulary: every name in it resolves to a set of rows from
+ * the bare name, with no second argument to complete it. A metric that needed
+ * one could not be a selector, and there is no longer any such metric.
  */
 export function toolSpecs(
   metrics: readonly string[],
-  selectors: readonly string[],
   presets: readonly string[],
   fields: readonly string[],
   ops: readonly string[],
@@ -84,12 +86,6 @@ export function toolSpecs(
         "ANSWER a how-many / list question about a named group. Returns the count and lists the matching rows in the CHAT PANEL. Read-only, and it does NOT change what the product table is showing — use filter_view or filter_compare for that. You get the count and the criterion back, not the rows: the rows are displayed directly.",
       args: {
         metric: { kind: "enum", values: metrics, required: true },
-        threshold: {
-          kind: "number",
-          exclusiveMin: 0,
-          description:
-            "Required when metric is stock_below: the number from the question (\"less than 50 in stock\" → 50). Copy it; never round it, never supply one the human did not give.",
-        },
       },
     },
 
@@ -176,7 +172,7 @@ export function toolSpecs(
         "Set the web-store visibility of ONE product (pass its sku) to an EXPLICIT value. `visible` is required: true shows it, false hides it. There is no toggle — a call without an explicit direction is rejected, never guessed. Reversible. A `where` selector matching many products becomes a batch and requires approval.",
       args: {
         sku: { kind: "string" },
-        where: { kind: "enum", values: selectors },
+        where: { kind: "enum", values: metrics },
         visible: {
           kind: "boolean",
           required: true,
@@ -197,7 +193,7 @@ export function toolSpecs(
       description:
         "Mark a set of products as discontinued (also hides them from the web store). DESTRUCTIVE — the status propagates downstream, so it requires human approval regardless of how many products match. Pass a `filter`.",
       args: {
-        filter: { kind: "enum", values: selectors, required: true },
+        filter: { kind: "enum", values: metrics, required: true },
       },
     },
   };

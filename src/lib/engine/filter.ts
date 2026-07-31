@@ -29,7 +29,6 @@ import {
 import { REFERENCE_DATE, effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
 import { PRESET_SPEC, describeFilter, filterMeasure, filterReveal } from "./filter-spec";
 import type {
-  ColumnKey,
   CompareField,
   CompareOp,
   FilterPreset,
@@ -91,22 +90,43 @@ export function filterProducts(state: FilterState): Product[] {
  * the whole reason the state is a criterion: after a write lands, resolving the
  * SAME state yields the NEW rows, so a filtered view cannot go on displaying a
  * membership the catalog no longer agrees with.
+ *
+ * `skus` ships in the criterion's OWN order, not the catalog's. A table filtered
+ * by a criterion is sorted by that criterion — the oldest expired sale at the
+ * top, the deepest stock deficit at the top — for the same reason the rendered
+ * list is: the order is part of what the criterion says, and re-deriving it in
+ * the browser would be the client ranking rows the server selected. Catalog
+ * order is what an UNFILTERED table shows, and `null` still means exactly that.
  */
 export function resolveFilter(state: FilterState): ResolvedFilter {
-  const rows = filterProducts(state);
+  const c = filterCriterion(state);
   return {
     state,
     // `null` only for the empty criterion. Every other criterion ships its
     // rows, including the empty result — "0 products match" is an answer, and
     // `null` would silently redraw all 30 in its place.
-    skus: state.kind === "none" ? null : rows.map((p) => p.sku),
-    label: describeFilter(state),
-    count: rows.length,
+    skus: state.kind === "none" ? null : orderedSkus(c),
+    label: c.label,
+    count: c.rows.length,
     // Whole set, recomputed here. Nothing downstream merges this with a
     // previous one — that merge is what let a column outlive its criterion.
     reveal: filterReveal(state),
   };
 }
+
+/**
+ * The criterion's rows in the criterion's order, as SKUs — the table's row
+ * order, decided by the same `sortByMeasure` that orders a rendered list.
+ *
+ * It ranks a projection rather than the products themselves: only `sku` and
+ * `status` are needed to order, and building the ranking out of whole `Product`s
+ * would put `cost` inside a value on its way to a client payload. Nothing here
+ * spreads a product.
+ */
+const orderedSkus = (c: Criterion): string[] =>
+  sortByMeasure(
+    c.rows.map((p) => ({ sku: p.sku, status: p.status, measure: measureOf(c, p) })),
+  ).map((r) => r.sku);
 
 // ── What a filter does to the view ─────────────────────────────────────────
 const marginsFor = (rows: Product[]): Record<string, number> =>
@@ -217,8 +237,16 @@ export function measuredRows(c: Criterion): Measured<PublicProduct>[] {
  * restocked, repriced or re-listed, so putting them on top would point the eye
  * at the one group not to act on. SKU breaks every tie, so the order is stable
  * between renders.
+ *
+ * Generic over the row, because the order has two consumers that carry
+ * different amounts of the product: the rendered list ranks whole public rows,
+ * and the table's filter ranks a `{ sku, status }` projection. One ranking
+ * function either way — the table and the panel cannot order one criterion two
+ * ways.
  */
-export function sortByMeasure(rows: Measured<PublicProduct>[]): Measured<PublicProduct>[] {
+export function sortByMeasure<T extends { sku: string; status: Product["status"] }>(
+  rows: Measured<T>[],
+): Measured<T>[] {
   return [...rows].sort((a, b) => {
     const aOut = a.status === "discontinued";
     const bOut = b.status === "discontinued";

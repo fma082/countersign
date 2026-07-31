@@ -53,18 +53,19 @@ export const expiredSales = (today = REFERENCE_DATE): Product[] =>
 export const activeSales = (today = REFERENCE_DATE): Product[] =>
   catalog.filter((p) => p.salePrice !== null && !saleExpired(p, today));
 
+/**
+ * Each product against its OWN reorder point — which is why this is a named
+ * group and not a comparison the human could type.
+ *
+ * The other stock question, "under N units", is an ABSOLUTE number and belongs
+ * to the comparison control (`stock lt N`), which reads the same field against
+ * the constant the human gave. On the seed the two are worlds apart: 13 products
+ * are below their reorder point, 20 are below 50 units, and NB-AU-1001 (42 in
+ * stock, reorder 15) is in the second set only. Answering one with the other is
+ * how "less than 50 in stock" came back as 13.
+ */
 export const belowReorderProducts = (): Product[] =>
   catalog.filter(belowReorder);
-
-/**
- * Stock under an ABSOLUTE number — a different question from `belowReorder`,
- * which compares each product against its OWN reorder point. On the seed the
- * two are worlds apart: 13 products are below their reorder point, 20 are below
- * 50 units, and NB-AU-1001 (42 in stock, reorder 15) is in the second set only.
- * Answering one with the other is how "less than 50 in stock" came back as 13.
- */
-export const stockBelowProducts = (threshold: number): Product[] =>
-  catalog.filter((p) => p.stock < threshold);
 
 export const negativeMargin = (): Product[] =>
   catalog.filter((p) => marginPct(p) < 0);

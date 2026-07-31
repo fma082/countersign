@@ -156,8 +156,10 @@ export const FIELD_SPEC: Record<CompareField, FieldSpec> = {
     noun: "stock",
     chip: "stock",
     format: String,
-    // The value against the number it was compared to — the same measure
-    // `stock_below` produced, now generalised to every operator.
+    // The value against the number it was compared to. `below_reorder` measures
+    // the same field against each product's OWN reorder point; this measures it
+    // against the constant the human typed, which is why the two are different
+    // questions rather than two spellings of one.
     measure: "ratio",
   },
   effective_price: {

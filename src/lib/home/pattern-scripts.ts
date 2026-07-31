@@ -47,7 +47,6 @@ const WEDGE_OPENING: ReplayStep[] = [
           "Marks each product as discontinued and drops it from the web store. The status propagates downstream, so this is destructive regardless of count.",
         targetIds: HIDDEN_IDS,
         items: HIDDEN_ITEMS,
-        effect: { mutations: HIDDEN_IDS.map(discontinueMutation) },
       },
     },
   },

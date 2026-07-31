@@ -27,7 +27,6 @@ import {
   REFERENCE_DATE,
   setField,
   setFieldBatch,
-  stockBelowProducts as stockBelow,
   type WriteField,
 } from "@/lib/scenario/catalog";
 import { effectivePrice, marginPct, type Product } from "@/lib/scenario/seed-products";
@@ -42,10 +41,8 @@ import {
 import {
   filterCriterion,
   filterEffect,
-  marginsFor,
   measuredRows,
   presetPhrase,
-  resolveFilter,
   type Criterion,
 } from "./filter";
 import { subtitleIntent } from "./intent-subtitle";
@@ -70,7 +67,8 @@ import type {
 
 // ── Read vocabulary ─────────────────────────────────────────────────────────
 /**
- * `query_products`'s metrics are the FILTER PRESETS plus two of its own.
+ * `query_products`'s metrics are the FILTER PRESETS plus `all`, and that is the
+ * whole list — the same one a write selector picks from.
  *
  * They are the same list on purpose. A preset is a named group; a read metric
  * is a named group; there is no reason for the model to learn two names for
@@ -78,34 +76,29 @@ import type {
  * them or look at them. Sharing the list also means a preset added to the bar
  * is answerable by a count on the same day, with no second table to remember.
  *
+ * There was briefly a THIRD kind here — a metric carrying its own number, so
+ * that "less than 50 in stock" had a metric to land in. It could not be offered
+ * as a write selector, because a selector resolves from a bare string with
+ * nowhere to put a number, and a DESTRUCTIVE tool must never be handed a target
+ * set that is undefined until an argument it cannot carry arrives. So the two
+ * lists had to differ, and the model had two names on one axis to choose
+ * between. Both problems were the same problem: a number does not belong in a
+ * name. It belongs in `filter_compare`, which states its field, its operator
+ * and its value as three declared arguments. Every name in this list resolves
+ * to a set of rows on its own, so reads and writes share one vocabulary and a
+ * selector cannot arrive half-specified.
+ *
  * Read metrics live on distinct AXES, and keeping the names axis-explicit stops
  * a small model from crossing them ("active products" is a STATUS, not a sale).
  * The axis grouping is in the system prompt's vocabulary block.
  */
-const THRESHOLD_METRICS = ["stock_below"] as const;
+type Metric = FilterPreset | "all";
 
-type ThresholdMetric = (typeof THRESHOLD_METRICS)[number];
-type Metric = FilterPreset | "all" | ThresholdMetric;
-
-const METRICS: readonly Metric[] = [...FILTER_PRESETS, "all", ...THRESHOLD_METRICS];
+const METRICS: readonly Metric[] = [...FILTER_PRESETS, "all"];
 const isMetric = (v: unknown): v is Metric =>
   typeof v === "string" && (METRICS as readonly string[]).includes(v);
-const needsThreshold = (m: Metric): m is ThresholdMetric =>
-  (THRESHOLD_METRICS as readonly string[]).includes(m);
-
-/**
- * Write selectors: the presets, plus "all". A threshold metric is absent by
- * construction — `resolveSelector` takes a bare string with nowhere to put a
- * number, so listing `stock_below` would offer a DESTRUCTIVE tool a selector
- * whose target set is undefined until an argument it cannot carry arrives. A
- * read can refuse a missing threshold and cost the human a re-ask; a
- * discontinue that resolves "stock below undefined" cannot.
- */
-const SELECTORS = [...FILTER_PRESETS, "all"] as const;
 
 const ALL_PHRASE = "products in the catalog";
-/** `{n}` is filled from the executed argument, never by the model. */
-const STOCK_BELOW_PHRASE = "products with stock below {n}";
 
 /**
  * The metric vocabulary in the server's own words — what the system prompt
@@ -124,7 +117,6 @@ export const METRIC_PHRASE: Record<Metric, string> = {
     string
   >),
   all: ALL_PHRASE,
-  stock_below: STOCK_BELOW_PHRASE,
 };
 
 /**
@@ -133,43 +125,17 @@ export const METRIC_PHRASE: Record<Metric, string> = {
  * Every preset routes through `filterCriterion` — the SAME assembly the filter
  * bar and the filter tools use — so a count and a filter over one name can
  * never disagree about what that name selects or how its rows are measured.
- * Only `all` and `stock_below`, which have no preset, are built here.
+ * Only `all`, which has no preset, is built here.
  */
-function metricCriterion(metric: Metric, threshold: number): Criterion {
+function metricCriterion(metric: Metric): Criterion {
   if (metric === "all") return { rows: allProducts(), label: ALL_PHRASE, measure: "none" };
-  if (metric === "stock_below")
-    return {
-      rows: stockBelow(threshold),
-      label: STOCK_BELOW_PHRASE.replace("{n}", String(threshold)),
-      measure: "ratio",
-      value: (p) => p.stock,
-      // The human's absolute number, not the product's own reorder point.
-      reference: () => threshold,
-    };
   return filterCriterion({ kind: "preset", preset: metric });
 }
 
-/**
- * Validate a read before it resolves anything. A threshold metric without a
- * usable number is INVALID — the same stance `set_web_visible` takes on a
- * missing direction. A default of 50 here would be the server inventing the
- * criterion it then reports as executed, which is the one thing this layer
- * exists to prevent.
- */
-function readMetric(metric: Metric, raw: unknown): Criterion | { error: string } {
-  if (!needsThreshold(metric)) return metricCriterion(metric, 0);
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0)
-    return {
-      error: `${metric} needs a positive numeric threshold — got "${String(raw)}". Pass the number from the question (e.g. threshold: 50); the server will not pick one.`,
-    };
-  return metricCriterion(metric, Math.floor(n));
-}
-
-/** Write selectors resolve from a bare string, so only bare metrics qualify. */
+/** Every metric resolves from its bare name, so every metric is a selector. */
 function resolveSelector(where: string): { rows: Product[]; phrase: string } | null {
-  if (!isMetric(where) || needsThreshold(where)) return null;
-  const c = metricCriterion(where, 0);
+  if (!isMetric(where)) return null;
+  const c = metricCriterion(where);
   return { rows: c.rows, phrase: c.label };
 }
 
@@ -191,7 +157,7 @@ const marginPatch = (skus: string[]): Record<string, number> => {
  * views of this one object, so a schema cannot promise a contract the parser
  * does not keep. See `tool-args.ts`.
  */
-export const TOOL_SPECS = toolSpecs(METRICS, SELECTORS, FILTER_PRESETS, COMPARE_FIELDS, COMPARE_OPS);
+export const TOOL_SPECS = toolSpecs(METRICS, FILTER_PRESETS, COMPARE_FIELDS, COMPARE_OPS);
 export const TOOLS: ProviderTool[] = buildProviderTools(TOOL_SPECS);
 
 // ── Governance results ─────────────────────────────────────────────────────
@@ -332,22 +298,18 @@ function cleanIntent(raw: unknown): string | undefined {
 function governQuery(id: string, args: ParsedArgs, turnMessage?: string): Governed {
   if (!isMetric(args.metric))
     return invalid(id, "query_products", args, `Unknown metric "${String(args.metric)}".`);
-  const read = readMetric(args.metric, args.threshold);
-  if ("error" in read) return invalid(id, "query_products", args, read.error);
+  const read = metricCriterion(args.metric);
   const { rows, label: phrase } = read;
   const targetIds = rows.map((p) => p.sku);
-  const revealMargin = args.metric === "negative_margin";
-  // A margin question narrows the table to the rows it is about, and the filter
-  // it sets is a real FilterState — the same one the bar would show for the
-  // `negative_margin` chip. This tool writes no view state the human cannot
-  // read off the bar and clear with one click.
   // A margin question narrows the table to the rows it is about, and it does so
   // by setting the `negative_margin` FilterState — the same criterion the bar's
   // chip sets, which is also what reveals the Margin column. One fact decides
-  // the rows, the label, the chip and the column.
-  const effect: ViewEffect = revealMargin
-    ? { ...filterEffect({ kind: "preset", preset: "negative_margin" }) }
-    : {};
+  // the rows, the label, the chip and the column, and the human can clear all
+  // four with the one ✕ in the bar.
+  const effect: ViewEffect =
+    args.metric === "negative_margin"
+      ? filterEffect({ kind: "preset", preset: "negative_margin" })
+      : {};
   // Kept only if it differs from what we ran. A subtitle that repeats the
   // header teaches the human to stop reading the subtitle.
   const userIntent = subtitleIntent(cleanIntent(turnMessage), phrase);
@@ -772,6 +734,12 @@ function gateFrom(
   plan: Plan,
   pendingSummary: string,
 ): Governed {
+  // `targetIds` is the whole of what the client needs to open a gate: the rows
+  // to spotlight. The view it suspends to show them is the client's own doing
+  // and is undone from the approval — there is no pre-computed effect here,
+  // because a gate's real effect does not exist until `executeGate` resolves it
+  // against the exclusions. A field describing what "will" run, resolved before
+  // the human has decided anything, could only be a guess dressed as a promise.
   const gate: GatePreview = {
     id: `gate_${++gateSeq}`,
     tool,
@@ -779,9 +747,6 @@ function gateFrom(
     description: plan.description,
     targetIds: plan.targetIds,
     items: plan.items,
-    // The gate clears the filter so every "could pass" row is visible while the
-    // human decides — approving targets you cannot see is not approving.
-    effect: { filter: resolveFilter(NO_FILTER) },
   };
   return {
     kind: "gate",

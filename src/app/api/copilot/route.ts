@@ -46,16 +46,18 @@ export const dynamic = "force-dynamic";
  * told a metric means exactly the string it will be handed back as
  * `criterionLabel`, so routing and labelling cannot drift apart.
  *
- * `stock_below` prints with its `{n}` placeholder intact — the parameter is
- * visible in the meaning, so "less than 50 in stock" has somewhere to land that
- * isn't `below_reorder`. The substituted label is built server-side, after the
- * call, from the number the model passed.
+ * Every entry is a NAMED group with no parameter — a question that carries a
+ * number does not belong to any of them and has `filter_compare` to land in
+ * instead. That is why the stock axis has one metric again: a second one whose
+ * meaning contained a placeholder was the model's only cue that a number was
+ * even expressible here, and it competed with `below_reorder` for every
+ * numberless question on the same axis.
  */
 const METRIC_VOCABULARY = (
   [
     ["status axis", ["active", "discontinued"]],
     ["sale axis", ["on_sale", "expired_sale"]],
-    ["stock axis", ["below_reorder", "stock_below"]],
+    ["stock axis", ["below_reorder"]],
     ["web store", ["hidden"]],
     ["other", ["negative_margin", "all"]],
   ] as const
@@ -76,7 +78,7 @@ Reads (run on their own):
 - query_products(metric): count a group and show the human the matching rows. Metrics sit on DISTINCT AXES — never cross them:
 ${METRIC_VOCABULARY}
   Match the user's words to the metric whose meaning above covers them, and pick that metric only. "How many active products?" → active (STATUS), never on_sale.
-  THE STOCK AXIS HAS TWO METRICS AND THEY ARE NOT INTERCHANGEABLE. A question naming a NUMBER of units is stock_below, and you must pass that number as threshold: "less than 50 in stock", "under 50 units", "stock below 50", "menos de 50 en stock", "con menos de 50 unidades" → stock_below with threshold: 50. Only a question with NO number — "running low", "which need reordering", "below the reorder point", "hay que reponer" — is below_reorder. Never answer a numbered question with below_reorder: it compares each product to its own reorder point, so it does not contain the user's number at all.
+  Every metric above is a named group with NO number in it. A question that names a number of units or an amount of money — "less than 50 in stock", "under $20", "menos de 50 en stock" — is not any of them: run filter_compare with that number.
 - inspect_product(sku): show the human ONE product's full record. Use for any question about a single sku (e.g. "what is the status of NB-AU-1005?"). You get its name, sku and status — never its price, stock or margin, because the record is already on screen. Write one sentence of context and NEVER state a number you were not given.
 
 CHANGING WHAT THE TABLE SHOWS — a different job from answering. The human has these same two controls in a filter bar above the table and can clear anything you set with one click.
@@ -120,6 +122,17 @@ interface Body {
   action?: "approve" | "undo" | "filter";
   /** `action:"filter"` only — the state the human's filter bar wants applied. */
   setFilter?: unknown;
+  /**
+   * `action:"approve"` only — the criterion the gate suspended, on its way back.
+   *
+   * The gate clears the view so every "could pass" row is visible while the
+   * human decides, and this is what puts it back. It rides the APPROVAL rather
+   * than a request of its own because the two are not independent: the writes
+   * change which rows the criterion selects, so it has to be re-resolved after
+   * them, in this order, or the restored table shows a membership the catalog
+   * no longer agrees with. Same parser, same resolver, no trust extended.
+   */
+  restoreFilter?: unknown;
   gateId?: string;
   excludedIds?: string[];
   undo?: UndoSpec;
@@ -463,9 +476,16 @@ function renderSlot(emit: Emit): RenderSlot {
  * here, not narrated by the model.
  */
 async function runGateDecision(body: Body, emit: Emit): Promise<void> {
+  // The suspended view, put back once the decision has played out. Resolved
+  // LAST in every branch below, so the rows it ships are the rows the criterion
+  // selects after whatever ran — see `restoreFilter`.
+  const restore = () =>
+    emit({ type: "effect", effect: filterEffect(parseFilterState(body.restoreFilter)) });
+
   const stored = body.gateId ? takeGate(body.gateId) : undefined;
   if (!stored) {
     emit({ type: "error", message: "That approval has expired. Ask for the change again." });
+    restore();
     return;
   }
   // Elements are filtered to strings, not just the array checked: a non-string
@@ -478,7 +498,9 @@ async function runGateDecision(body: Body, emit: Emit): Promise<void> {
   if (result.kind === "refused") {
     // The stored call no longer parses. It does not run, and it does not run
     // with a substituted value either — the badge says `invalid` and says why.
+    // The gate is still closed, so the view the gate suspended still comes back.
     emit({ type: "tool", event: result.event });
+    restore();
     emit({ type: "done" });
     return;
   }
@@ -488,6 +510,9 @@ async function runGateDecision(body: Body, emit: Emit): Promise<void> {
   if (result.outcome.renderPayload) {
     emit({ type: "render", render: result.outcome.renderPayload });
   }
+  // After the mutations, never before: the criterion is re-run against the
+  // catalog this approval produced.
+  restore();
   emit({ type: "token", text: gateClosing(result.outcome.modelPayload) });
   emit({ type: "done" });
 }
@@ -555,6 +580,9 @@ const KNOWN_TOOLS = [
   "filter_view", //    but keeping the more specific name first is the safer order
   "query_products",
 ] as const;
+/** The metric vocabulary as bare tokens — one name, one set of rows, no
+ *  parameter to recover alongside it. A number in the text belongs to
+ *  `filter_compare`'s `value` and to nothing on this list. */
 const KNOWN_METRICS = [
   "below_reorder",
   "negative_margin",
@@ -563,7 +591,6 @@ const KNOWN_METRICS = [
   "hidden",
   "active",
   "discontinued",
-  "stock_below",
   "all",
 ] as const;
 const KNOWN_OPS = ["lte", "gte", "lt", "gt", "eq"] as const; // longest first
@@ -604,14 +631,15 @@ function salvageToolCall(text: string): { name: string; args: Record<string, unk
       args.field = field;
       if (number) args.value = Number(number[0]);
     } else {
+      // One token per tool, and nothing else to recover: a metric names its own
+      // rows, so there is no second argument that could be missing. `number` is
+      // deliberately unread here — a number found in the text of a metric call
+      // has no argument to land in, and inventing one would be the server
+      // authoring a criterion and then executing it.
       const metric = KNOWN_METRICS.find((m) => t.includes(m));
       if (metric)
         args[name === "filter_view" ? "preset" : name === "discontinue_products" ? "filter" : "metric"] =
           metric;
-      // A threshold metric is nothing without its number. Recover it from the
-      // same text rather than let the read resolve to a criterion with a hole
-      // in it — and if there is no number, the read is refused, not defaulted.
-      if (metric === "stock_below" && number) args.threshold = Number(number[0]);
     }
   }
   return { name, args };

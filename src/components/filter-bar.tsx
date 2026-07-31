@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, X } from "lucide-react";
+import { Check, PauseCircle, X } from "lucide-react";
 import {
   COMPARE_FIELDS,
   COMPARE_OPS,
@@ -41,18 +41,32 @@ import { cn } from "@/lib/cn";
  */
 export function FilterBar({
   filter,
+  held,
   onApply,
   disabled,
 }: {
   /** What the server last resolved. `null` — never filtered this session. */
   filter: ResolvedFilter | null;
+  /**
+   * A gate has SUSPENDED this criterion so every row it could touch is visible.
+   * When set, the bar describes the table — which is showing everything — and
+   * names the criterion that is coming back.
+   *
+   * Saying nothing was the alternative, and it is the worse one: the human
+   * applied a filter, the table silently jumped back to 30 rows, and the only
+   * available reading was that the agent had thrown their view away.
+   */
+  held: ResolvedFilter | null;
   onApply: (next: FilterState) => void;
   /** The engine is mid-turn or parked at a gate; the view is not the human's to
    *  move right now. The controls stay VISIBLE and go inert — removing them
    *  would make the bar flicker out exactly when the table is most in flux. */
   disabled?: boolean;
 }) {
-  const state = filter?.state ?? NO_FILTER;
+  // The bar always describes what is ON SCREEN. Under a hold that is the whole
+  // catalog, so nothing reads as pressed and no applied chip is drawn — the
+  // criterion is not gone, it is named in the notice instead.
+  const state = held ? NO_FILTER : (filter?.state ?? NO_FILTER);
   const activePreset = state.kind === "preset" ? state.preset : null;
   const applied = state.kind !== "none" ? filter : null;
 
@@ -114,16 +128,41 @@ export function FilterBar({
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Comparison state={state} disabled={disabled} onApply={apply} />
 
-        {applied && (
-          <AppliedChip
-            label={applied.label}
-            count={applied.count}
-            disabled={disabled}
-            onClear={clear}
-          />
+        {held ? (
+          <HeldChip label={held.label} />
+        ) : (
+          applied && (
+            <AppliedChip
+              label={applied.label}
+              count={applied.count}
+              disabled={disabled}
+              onClear={clear}
+            />
+          )
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The criterion a gate is holding, and the promise that it comes back.
+ *
+ * Dashed rather than filled, and with no ✕ — there is nothing to clear, because
+ * nothing is currently applied. It is a statement about the table (every row is
+ * showing, and here is why) rather than a control.
+ *
+ * The label is the server's own sentence, the same string the applied chip
+ * prints. The bar never composes one.
+ */
+function HeldChip({ label }: { label: string }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-dashed border-line-strong px-2.5 py-1 text-[11.5px] text-ink-2">
+      <PauseCircle size={12} className="flex-none text-ink-3" aria-hidden />
+      <span className="min-w-0">
+        Filter paused while you decide — <span className="text-ink">{label}</span> returns after.
+      </span>
+    </span>
   );
 }
 
