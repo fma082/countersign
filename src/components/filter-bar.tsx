@@ -131,14 +131,7 @@ export function FilterBar({
         {held ? (
           <HeldChip label={held.label} />
         ) : (
-          applied && (
-            <AppliedChip
-              label={applied.label}
-              count={applied.count}
-              disabled={disabled}
-              onClear={clear}
-            />
-          )
+          applied && <AppliedChip label={applied.label} disabled={disabled} onClear={clear} />
         )}
       </div>
     </div>
@@ -258,26 +251,34 @@ const selectClass =
  * What is on screen, and the way off it.
  *
  * The label is printed VERBATIM — it is the server's description of the
- * criterion it ran, the same string in the model's prompt. The count beside it
- * is the server's too. This chip answers both halves of the question a filtered
- * table used to leave open: what am I looking at, and how do I get out.
+ * criterion it ran, the same string in the model's prompt.
+ *
+ * NO COUNT. The chip used to print one in front of the label and the two did not
+ * agree grammatically: `describeFilter` describes a CRITERION, which is plural
+ * and count-agnostic by definition, so a restored one-row filter read "1
+ * products still on an expired sale price". Neither end of that could be fixed
+ * where it showed: teaching the label about counts would give one sentence two
+ * spellings and three consumers that must pick the right one, and pluralising it
+ * here would be the client rewriting the server's description of its own
+ * criterion.
+ *
+ * So the count goes where it already was — the "N of 30" readout in the header,
+ * which says how many rows are showing and is the resolver's own number. The
+ * chip says WHAT the rows are and how to leave; the readout says HOW MANY. Each
+ * fact has one place, and the count is no longer printed twice.
  */
 function AppliedChip({
   label,
-  count,
   disabled,
   onClear,
 }: {
   label: string;
-  count: number;
   disabled?: boolean;
   onClear: () => void;
 }) {
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-action bg-sub py-1 pl-2.5 pr-1 text-[11.5px] text-ink">
-      <span className="min-w-0">
-        <span className="tabular-nums">{count}</span> {label}
-      </span>
+      <span className="min-w-0">{label}</span>
       <button
         type="button"
         disabled={disabled}
